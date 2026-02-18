@@ -147,7 +147,7 @@ void Off::InSDK::World::InitGWorld()
 /* FText */
 void Off::InSDK::Text::InitTextOffsets()
 {
-	if (!Off::InSDK::ProcessEvent::PEIndex)
+	if (Off::InSDK::ProcessEvent::PEIndex == 0 && Off::InSDK::ProcessEvent::PEOffset == 0)
 	{
 		std::cerr << std::format("\nDumper-7: Error, 'InitInSDKTextOffsets' was called before ProcessEvent was initialized!\n") << std::endl;
 		return;
@@ -183,11 +183,25 @@ void Off::InSDK::Text::InitTextOffsets()
 		}
 	}
 
+	if (!InStringProp || !ReturnProp)
+	{
+		std::cerr << std::format("\nDumper-7: Error, failed to resolve Conv_StringToText parameters (InString: {}, Return: {}).\n",
+			static_cast<bool>(InStringProp), static_cast<bool>(ReturnProp)) << std::endl;
+		return;
+	}
+
 	const int32 ParamSize = Conv_StringToText.GetStructSize();
 	const int32 FTextSize = ReturnProp.GetSize();
 
 	const int32 StringOffset = InStringProp.GetOffset();
 	const int32 ReturnValueOffset = ReturnProp.GetOffset();
+
+	if (ParamSize <= 0 || FTextSize <= 0 || StringOffset < 0 || ReturnValueOffset < 0 || StringOffset >= ParamSize || ReturnValueOffset >= ParamSize)
+	{
+		std::cerr << std::format("\nDumper-7: Error, invalid Conv_StringToText layout (ParamSize: 0x{:X}, FTextSize: 0x{:X}, StringOffset: 0x{:X}, ReturnOffset: 0x{:X}).\n",
+			ParamSize, FTextSize, StringOffset, ReturnValueOffset) << std::endl;
+		return;
+	}
 
 	Off::InSDK::Text::TextSize = FTextSize;
 
@@ -211,7 +225,7 @@ void Off::InSDK::Text::InitTextOffsets()
 	uint8_t* FTextDataPtr = nullptr;
 
 	/* Search for the first valid pointer inside of the FText and make the offset our 'TextDatOffset' */
-	for (int32 i = 0; i < (FTextSize - sizeof(void*)); i += sizeof(void*))
+	for (int32 i = 0; i < (FTextSize - static_cast<int32>(sizeof(void*))); i += static_cast<int32>(sizeof(void*)))
 	{
 		void* PossibleTextDataPtr = *reinterpret_cast<void**>(ParamPtr + ReturnValueOffset + i);
 

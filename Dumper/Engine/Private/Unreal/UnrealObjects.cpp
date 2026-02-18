@@ -796,6 +796,9 @@ const void* UEProperty::GetAddress() const
 
 std::pair<UEClass, UEFFieldClass> UEProperty::GetClass() const
 {
+	if (!Base)
+		return { UEClass(0), UEFFieldClass(0) };
+
 	if (Settings::Internal::bUseFProperty)
 		return { UEClass(0), UEFField(Base).GetClass() };
 
@@ -804,6 +807,9 @@ std::pair<UEClass, UEFFieldClass> UEProperty::GetClass() const
 
 EClassCastFlags UEProperty::GetCastFlags() const
 {
+	if (!Base)
+		return EClassCastFlags::None;
+
 	auto [Class, FieldClass] = GetClass();
 
 	return Class ? Class.GetCastFlags() : FieldClass.GetCastFlags();
@@ -811,12 +817,15 @@ EClassCastFlags UEProperty::GetCastFlags() const
 
 UEProperty::operator bool() const
 {
-	return Base != nullptr && ((Base + Off::UObject::Class) != nullptr || (Base + Off::FField::Class) != nullptr);
+	return Base != nullptr;
 }
 
 
 bool UEProperty::IsA(EClassCastFlags TypeFlags) const
 {
+	if (!Base)
+		return false;
+
 	if (GetClass().first)
 		return GetClass().first.IsType(TypeFlags);
 
@@ -825,6 +834,9 @@ bool UEProperty::IsA(EClassCastFlags TypeFlags) const
 
 FName UEProperty::GetFName() const
 {
+	if (!Base)
+		return FName(nullptr);
+
 	if (Settings::Internal::bUseFProperty)
 	{
 		return FName(Base + Off::FField::Name); //Not the real FName, but a wrapper which holds the address of a FName
@@ -835,6 +847,9 @@ FName UEProperty::GetFName() const
 
 int32 UEProperty::GetArrayDim() const
 {
+	if (!Base)
+		return 0;
+
 	if (Settings::Internal::bUseUint8ArrayDim)
 		return *reinterpret_cast<uint8*>(Base + Off::Property::ArrayDim);
 
@@ -843,26 +858,41 @@ int32 UEProperty::GetArrayDim() const
 
 int32 UEProperty::GetSize() const
 {
+	if (!Base)
+		return 0;
+
 	return *reinterpret_cast<int32*>(Base + Off::Property::ElementSize);
 }
 
 int32 UEProperty::GetOffset() const
 {
+	if (!Base)
+		return 0;
+
 	return *reinterpret_cast<int32*>(Base + Off::Property::Offset_Internal);
 }
 
 EPropertyFlags UEProperty::GetPropertyFlags() const
 {
+	if (!Base)
+		return EPropertyFlags::None;
+
 	return *reinterpret_cast<EPropertyFlags*>(Base + Off::Property::PropertyFlags);
 }
 
 bool UEProperty::HasPropertyFlags(EPropertyFlags PropertyFlag) const
 {
+	if (!Base)
+		return false;
+
 	return GetPropertyFlags() & PropertyFlag;
 }
 
 bool UEProperty::IsType(EClassCastFlags PossibleTypes) const
 {
+	if (!Base)
+		return false;
+
 	return (static_cast<uint64>(GetCastFlags()) & static_cast<uint64>(PossibleTypes)) != 0;
 }
 
@@ -878,6 +908,9 @@ std::string UEProperty::GetValidName() const
 
 int32 UEProperty::GetAlignment() const
 {
+	if (!Base)
+		return 0x1;
+
 	EClassCastFlags TypeFlags = (GetClass().first ? GetClass().first.GetCastFlags() : GetClass().second.GetCastFlags());
 
 	if (TypeFlags & EClassCastFlags::ByteProperty)
