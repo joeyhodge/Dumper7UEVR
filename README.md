@@ -12,7 +12,11 @@ SDK Generator for all Unreal Engine games. Supported versions are all of UE4 and
 ## Support Me
 
 KoFi: https://ko-fi.com/fischsalat \
-Patreon: https://patreon.com/user?u=119629245
+Patreon: https://www.patreon.com/u119629245
+
+LTC (LTC-network): `LLtXWxDbc5H9d96VJF36ZpwVX6DkYGpTJU` \
+BTC (Bitcoin): `1DVDUMcotWzEG1tyd1FffyrYeu4YEh7spx` \
+USDT (Tron (TRC20)): `TWHDoUr2H52Gb2WYdZe7z1Ct316gMg64ps`
 
 ## Overriding Offsets
 
@@ -63,7 +67,19 @@ Patreon: https://patreon.com/user?u=119629245
       .MaxChunksOffset = 0x18,
       .NumChunksOffset = 0x1C,
   }
-  ``` 
+  ```
+
+## Config File
+You can optionally dynamically change settings through a `Dumper-7.ini` file, instead of modifying `Settings.h`.
+- **Per-game**: Create `Dumper-7.ini` in the same directory as the game's exe file.
+- **Global**: Create `Dumper-7.ini` under `C:\Dumper-7`
+
+Example:
+```ini
+[Settings]
+SleepTimeout=100
+SDKNamespaceName=MyOwnSDKNamespace
+```
 ## Issues
 
 If you have any issues using the Dumper, please create an Issue on this repository\
