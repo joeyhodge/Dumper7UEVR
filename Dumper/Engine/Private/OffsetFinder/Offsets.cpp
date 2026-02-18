@@ -147,6 +147,11 @@ void Off::InSDK::World::InitGWorld()
 /* FText */
 void Off::InSDK::Text::InitTextOffsets()
 {
+	// Mark unresolved by default. These will be overwritten when detection succeeds.
+	Off::InSDK::Text::TextDatOffset = -1;
+	Off::InSDK::Text::InTextDataStringOffset = -1;
+	Off::InSDK::Text::TextSize = 0;
+
 	if (Off::InSDK::ProcessEvent::PEIndex == 0 && Off::InSDK::ProcessEvent::PEOffset == 0)
 	{
 		std::cerr << std::format("\nDumper-7: Error, 'InitInSDKTextOffsets' was called before ProcessEvent was initialized!\n") << std::endl;
@@ -257,6 +262,11 @@ void Off::InSDK::Text::InitTextOffsets()
 			Off::InSDK::Text::InTextDataStringOffset = (i - sizeof(void*));
 			break;
 		}
+	}
+
+	if (Off::InSDK::Text::InTextDataStringOffset < 0)
+	{
+		std::cerr << std::format("\nDumper-7: Warning, FTextData::TextSource offset could not be found.\n") << std::endl;
 	}
 
 	std::cerr << std::format("Off::InSDK::Text::TextSize: 0x{:X}\n", Off::InSDK::Text::TextSize);

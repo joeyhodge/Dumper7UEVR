@@ -4697,62 +4697,112 @@ public:
 };
 )";
 
-	const int32 TextDataSize = (Off::InSDK::Text::InTextDataStringOffset + sizeof(FString));
+	const bool bHasResolvedFTextLayout =
+		Off::InSDK::Text::TextSize > 0 &&
+		Off::InSDK::Text::TextDatOffset >= 0 &&
+		Off::InSDK::Text::InTextDataStringOffset >= 0;
 
-	/* class FTextData */
-	PredefinedStruct FTextData = PredefinedStruct{
-		.UniqueName = "FTextData", .Size = TextDataSize, .Alignment = alignof(FString), .bUseExplictAlignment = false, .bIsFinal = true, .bIsClass = true, .bIsUnion = false, .Super = nullptr
-	};
-
-	FTextData.Properties =
+	if (bHasResolvedFTextLayout)
 	{
-		PredefinedMember {
-			.Comment = "NOT AUTO-GENERATED PROPERTY",
-			.Type = "class FString", .Name = "TextSource", .Offset = Off::InSDK::Text::InTextDataStringOffset, .Size = sizeof(FString), .ArrayDim = 0x1, .Alignment = alignof(FString),
-			.bIsStatic = false, .bIsZeroSizeMember = false, .bIsBitField = false, .BitIndex = 0xFF
-		},
-	};
+		const int32 TextDataSize = (Off::InSDK::Text::InTextDataStringOffset + sizeof(FString));
 
-	BasicHpp << R"(namespace FTextImpl
+		/* class FTextData */
+		PredefinedStruct FTextData = PredefinedStruct{
+			.UniqueName = "FTextData", .Size = TextDataSize, .Alignment = alignof(FString), .bUseExplictAlignment = false, .bIsFinal = true, .bIsClass = true, .bIsUnion = false, .Super = nullptr
+		};
+
+		FTextData.Properties =
+		{
+			PredefinedMember {
+				.Comment = "NOT AUTO-GENERATED PROPERTY",
+				.Type = "class FString", .Name = "TextSource", .Offset = Off::InSDK::Text::InTextDataStringOffset, .Size = sizeof(FString), .ArrayDim = 0x1, .Alignment = alignof(FString),
+				.bIsStatic = false, .bIsZeroSizeMember = false, .bIsBitField = false, .BitIndex = 0xFF
+			},
+		};
+
+		BasicHpp << R"(namespace FTextImpl
 {)";
-	GenerateStruct(&FTextData, BasicHpp, BasicCpp, BasicHpp, AssertionsFile);
-	BasicHpp << "}\n";
+		GenerateStruct(&FTextData, BasicHpp, BasicCpp, BasicHpp, AssertionsFile);
+		BasicHpp << "}\n";
 
-	/* class FText */
-	PredefinedStruct FText = PredefinedStruct{
-		.UniqueName = "FText", .Size = Off::InSDK::Text::TextSize, .Alignment = sizeof(void*), .bUseExplictAlignment = false, .bIsFinal = true, .bIsClass = true, .bIsUnion = false, .Super = nullptr
-	};
+		/* class FText */
+		PredefinedStruct FText = PredefinedStruct{
+			.UniqueName = "FText", .Size = Off::InSDK::Text::TextSize, .Alignment = sizeof(void*), .bUseExplictAlignment = false, .bIsFinal = true, .bIsClass = true, .bIsUnion = false, .Super = nullptr
+		};
 
-	FText.Properties =
-	{
-		PredefinedMember {
-			.Comment = "NOT AUTO-GENERATED PROPERTY",
-			.Type = "class FTextImpl::FTextData*", .Name = "TextData", .Offset = Off::InSDK::Text::TextDatOffset, .Size = sizeof(void*), .ArrayDim = 0x1, .Alignment = 0x1,
-			.bIsStatic = false, .bIsZeroSizeMember = false, .bIsBitField = false, .BitIndex = 0xFF
-		},
-	};
+		FText.Properties =
+		{
+			PredefinedMember {
+				.Comment = "NOT AUTO-GENERATED PROPERTY",
+				.Type = "class FTextImpl::FTextData*", .Name = "TextData", .Offset = Off::InSDK::Text::TextDatOffset, .Size = sizeof(void*), .ArrayDim = 0x1, .Alignment = 0x1,
+				.bIsStatic = false, .bIsZeroSizeMember = false, .bIsBitField = false, .BitIndex = 0xFF
+			},
+		};
 
-	FText.Functions =
-	{
-		PredefinedFunction {
-			.CustomComment = "",
-			.ReturnType = "const class FString&", .NameWithParams = "GetStringRef()", .Body =
+		FText.Functions =
+		{
+			PredefinedFunction {
+				.CustomComment = "",
+				.ReturnType = "const class FString&", .NameWithParams = "GetStringRef()", .Body =
 R"({
 	return TextData->TextSource;
 })",
-			.bIsStatic = false, .bIsConst = true, .bIsBodyInline = true
-		},
-		PredefinedFunction {
-			.CustomComment = "",
-			.ReturnType = "std::string", .NameWithParams = "ToString()", .Body =
+				.bIsStatic = false, .bIsConst = true, .bIsBodyInline = true
+			},
+			PredefinedFunction {
+				.CustomComment = "",
+				.ReturnType = "std::string", .NameWithParams = "ToString()", .Body =
 R"({
 	return TextData->TextSource.ToString();
 })",
-			.bIsStatic = false, .bIsConst = true, .bIsBodyInline = true
-		},
-	};
+				.bIsStatic = false, .bIsConst = true, .bIsBodyInline = true
+			},
+		};
 
-	GenerateStruct(&FText, BasicHpp, BasicCpp, BasicHpp, AssertionsFile);
+		GenerateStruct(&FText, BasicHpp, BasicCpp, BasicHpp, AssertionsFile);
+	}
+	else
+	{
+		const int32 FallbackFTextSize = Off::InSDK::Text::TextSize > 0 ? Off::InSDK::Text::TextSize : static_cast<int32>(sizeof(void*) * 3);
+
+		std::cerr << std::format("Dumper-7: Warning, unresolved FText layout. Using opaque fallback representation (size: 0x{:X}).\n\n", FallbackFTextSize);
+
+		PredefinedStruct FText = PredefinedStruct{
+			.UniqueName = "FText", .Size = FallbackFTextSize, .Alignment = sizeof(void*), .bUseExplictAlignment = false, .bIsFinal = true, .bIsClass = true, .bIsUnion = false, .Super = nullptr
+		};
+
+		FText.Properties =
+		{
+			PredefinedMember {
+				.Comment = "Fallback when FText offsets could not be resolved at dump time",
+				.Type = "uint8", .Name = "UnknownData", .Offset = 0x0, .Size = sizeof(uint8), .ArrayDim = FallbackFTextSize, .Alignment = alignof(uint8),
+				.bIsStatic = false, .bIsZeroSizeMember = false, .bIsBitField = false, .BitIndex = 0xFF
+			},
+		};
+
+		FText.Functions =
+		{
+			PredefinedFunction {
+				.CustomComment = "",
+				.ReturnType = "const class FString&", .NameWithParams = "GetStringRef()", .Body =
+R"({
+	static const FString Empty{};
+	return Empty;
+})",
+				.bIsStatic = false, .bIsConst = true, .bIsBodyInline = true
+			},
+			PredefinedFunction {
+				.CustomComment = "",
+				.ReturnType = "std::string", .NameWithParams = "ToString()", .Body =
+R"({
+	return std::string{};
+})",
+				.bIsStatic = false, .bIsConst = true, .bIsBodyInline = true
+			},
+		};
+
+		GenerateStruct(&FText, BasicHpp, BasicCpp, BasicHpp, AssertionsFile);
+	}
 
 
 	constexpr int32 FWeakObjectPtrSize = 0x08;
