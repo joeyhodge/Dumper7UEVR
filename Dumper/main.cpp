@@ -10,6 +10,7 @@
 #include <locale>
 #include <memory>
 #include <string>
+#include <sstream>
 
 #include "Generators/CppGenerator.h"
 #include "Generators/DumpspaceGenerator.h"
@@ -113,7 +114,18 @@ private:
     void trigger_dump(bool useHaptics)
     {
         API::get()->log_info("dump.dll: dumping values");
-        print_all_objects();
+        try
+        {
+            print_all_objects();
+        }
+        catch (const std::exception& e)
+        {
+            API::get()->log_error("dump.dll: object pre-pass failed: %s", e.what());
+        }
+        catch (...)
+        {
+            API::get()->log_error("dump.dll: object pre-pass failed with unknown exception");
+        }
 
         if (useHaptics && m_VR != nullptr)
         {
@@ -140,52 +152,99 @@ private:
         if (!file.is_open())
             return;
 
-        file << "Chunked: " << API::FUObjectArray::is_chunked() << "\n";
-        file << "Inlined: " << API::FUObjectArray::is_inlined() << "\n";
-        file << "Objects offset: " << API::FUObjectArray::get_objects_offset() << "\n";
-        file << "Item distance: " << API::FUObjectArray::get_item_distance() << "\n";
-        file << "Object count: " << API::FUObjectArray::get()->get_object_count() << "\n";
-        file << "------------\n";
-
         const auto objects = API::FUObjectArray::get();
         if (objects == nullptr)
         {
+            file << "Chunked: unavailable\n";
+            file << "Inlined: unavailable\n";
+            file << "Objects offset: unavailable\n";
+            file << "Item distance: unavailable\n";
+            file << "Object count: unavailable\n";
+            file << "------------\n";
             file << "Failed to get FUObjectArray\n";
             return;
         }
 
-        for (int32_t i = 0; i < objects->get_object_count(); ++i)
+        file << "Chunked: " << API::FUObjectArray::is_chunked() << "\n";
+        file << "Inlined: " << API::FUObjectArray::is_inlined() << "\n";
+        file << "Objects offset: " << API::FUObjectArray::get_objects_offset() << "\n";
+        file << "Item distance: " << API::FUObjectArray::get_item_distance() << "\n";
+
+        int32_t objectCount = 0;
+
+        try
         {
-            const auto object = objects->get_object(i);
-            if (object == nullptr)
-                continue;
+            objectCount = objects->get_object_count();
+            file << "Object count: " << objectCount << "\n";
+        }
+        catch (const std::exception& e)
+        {
+            file << "Object count: exception: " << e.what() << "\n";
+            file << "------------\n";
+            return;
+        }
+        catch (...)
+        {
+            file << "Object count: exception\n";
+            file << "------------\n";
+            return;
+        }
 
-            const auto name = object->get_full_name();
-            if (name.empty())
-                continue;
+        file << "------------\n";
 
-            std::string nameNarrow = std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.to_bytes(name);
-            file << i << " " << nameNarrow << "\n";
+        for (int32_t i = 0; i < objectCount; ++i)
+        {
+            try
+            {
+                const auto object = objects->get_object(i);
+                if (object == nullptr)
+                    continue;
+
+                const auto name = object->get_full_name();
+                if (name.empty())
+                    continue;
+
+                std::string nameNarrow = std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.to_bytes(name);
+                file << i << " " << nameNarrow << "\n";
+            }
+            catch (const std::exception& e)
+            {
+                file << i << " <exception: " << e.what() << ">\n";
+            }
+            catch (...)
+            {
+                file << i << " <exception>\n";
+            }
         }
     }
 };
 
 std::unique_ptr<DumpPlugin> g_plugin{new DumpPlugin()};
 
-DWORD MainThread(HMODULE module)
+namespace {
+void append_status_line(const std::string& line)
 {
-    AllocConsole();
-    FILE* dummy = nullptr;
-    freopen_s(&dummy, "CONOUT$", "w", stderr);
-    freopen_s(&dummy, "CONIN$", "r", stdin);
+    if (Generator::SDKFolder.empty())
+        return;
 
-    std::cerr << "Started Generation [Dumper-7]!\n";
+    std::ofstream status(Generator::SDKFolder + "\\dumper7_status.txt", std::ios::app);
+    if (!status.is_open())
+        return;
+
+    status << line << "\n";
+}
+
+DWORD MainThreadImpl(HMODULE module)
+{
+    (void)module;
+
+    append_status_line("Started Generation [Dumper-7]");
 
     Settings::Config::Load();
 
     if (Settings::Config::SleepTimeout > 0)
     {
-        std::cerr << "Sleeping for " << Settings::Config::SleepTimeout << "ms...\n";
+        append_status_line("Sleeping for " + std::to_string(Settings::Config::SleepTimeout) + "ms");
         Sleep(Settings::Config::SleepTimeout);
     }
 
@@ -209,9 +268,9 @@ DWORD MainThread(HMODULE module)
         Settings::Generator::GameVersion = version.ToString();
     }
 
-    std::cerr << "GameName: " << Settings::Generator::GameName << "\n";
-    std::cerr << "GameVersion: " << Settings::Generator::GameVersion << "\n\n";
-    std::cerr << "FolderName: " << (Settings::Generator::GameVersion + '-' + Settings::Generator::GameName) << "\n\n";
+    append_status_line("GameName: " + Settings::Generator::GameName);
+    append_status_line("GameVersion: " + Settings::Generator::GameVersion);
+    append_status_line("FolderName: " + (Settings::Generator::GameVersion + '-' + Settings::Generator::GameName));
 
     Generator::Generate<CppGenerator>();
     Generator::Generate<MappingGenerator>();
@@ -221,20 +280,43 @@ DWORD MainThread(HMODULE module)
     auto dumpFinishTime = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> dumpTime = dumpFinishTime - dumpStartTime;
 
-    std::cerr << "\n\nGenerating SDK took (" << dumpTime.count() << "ms)\n\n\n";
-
-    fclose(stderr);
-    if (dummy)
-        fclose(dummy);
-    FreeConsole();
-    ExitThread(0);
+    append_status_line("Generating SDK took (" + std::to_string(dumpTime.count()) + "ms)");
+    append_status_line("Dumper-7 finished successfully");
 
     return 0;
+}
+
+DWORD HandleMainThreadException(unsigned int code)
+{
+    std::ostringstream ss;
+    ss << "Dumper-7 terminated with SEH exception 0x" << std::hex << code;
+    append_status_line(ss.str());
+    return 1;
+}
+}
+
+DWORD MainThread(HMODULE module)
+{
+    __try
+    {
+        return MainThreadImpl(module);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return HandleMainThreadException(GetExceptionCode());
+    }
 }
 
 BOOL StartUEDump(const std::string& DumpLocation, HANDLE hModule)
 {
     Generator::SDKFolder = DumpLocation;
-    CreateThread(0, 0, (LPTHREAD_START_ROUTINE)MainThread, hModule, 0, 0);
+    const auto thread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)MainThread, hModule, 0, 0);
+    if (thread == nullptr)
+    {
+        append_status_line("Failed to create Dumper-7 worker thread");
+        return FALSE;
+    }
+
+    CloseHandle(thread);
     return TRUE;
 }
