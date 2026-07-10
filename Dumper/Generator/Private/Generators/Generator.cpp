@@ -10,6 +10,8 @@
 
 #include "Platform.h"
 
+#include <utility>
+
 std::string Generator::SDKFolder{};
 
 inline void InitSettings()
@@ -22,7 +24,7 @@ inline void InitSettings()
 }
 
 
-void Generator::InitEngineCore()
+bool Generator::InitEngineCore()
 {
 	/* manual override */
 	//ObjectArray::Init(/*GObjects*/, /*Layout = Default*/); // FFixedUObjectArray (UEVersion < UE4.21)
@@ -41,68 +43,109 @@ void Generator::InitEngineCore()
 	/* Multiversus [Unsupported, weird GObjects-struct] */
 	//InitObjectArrayDecryption([](void* ObjPtr) -> uint8* { return reinterpret_cast<uint8*>(uint64(ObjPtr) ^ 0x1B5DEAFD6B4068C); });
 
-	ObjectArray::Init();
+	ReportProgress("ObjectArray initialization");
+	if (!ObjectArray::IsInitialized() && !ObjectArray::Init())
+		return false;
 
+	ReportProgress("FName initialization");
 	CALL_PLATFORM_SPECIFIC_FUNCTION(FName::Init);
 
+	ReportProgress("Core offset discovery");
 	Off::Init();
+	ReportProgress("Property size discovery");
 	PropertySizes::Init();
 
+	ReportProgress("ProcessEvent discovery");
 	CALL_PLATFORM_SPECIFIC_FUNCTION(Off::InSDK::ProcessEvent::InitPE); // Must be at this position, relies on offsets initialized in Off::Init()
 
+	ReportProgress("GWorld discovery");
 	Off::InSDK::World::InitGWorld(); // Must be at this position, relies on offsets initialized in Off::Init()
 
+	ReportProgress("FText offset discovery");
 	Off::InSDK::Text::InitTextOffsets(); // Must be at this position, relies on offsets initialized in Off::InitPE()
 
+	ReportProgress("Generator settings initialization");
 	InitSettings();
+	ReportProgress("Engine core initialization complete");
+	return true;
 }
 
 void Generator::InitInternal()
 {
 	// Initialize PackageManager with all packages, their names, structs, classes enums, functions and dependencies
+	ReportProgress("PackageManager::Init");
 	PackageManager::Init();
 
 	// Initialize StructManager with all structs and their names
+	ReportProgress("StructManager::Init");
 	StructManager::Init();
 	
 	// Initialize EnumManager with all enums and their names
+	ReportProgress("EnumManager::Init");
 	EnumManager::Init();
 	
 	// Initialized all Member-Name collisions
+	ReportProgress("MemberManager::Init");
 	MemberManager::Init();
 
 	// Post-Initialize PackageManager after StructManager has been initialized. 'PostInit()' handles Cyclic-Dependencies detection
+	ReportProgress("PackageManager::PostInit");
 	PackageManager::PostInit();
+	ReportProgress("Metadata initialization complete");
+}
+
+bool Generator::PrepareOutputFolder()
+{
+	if (!DumperFolder.empty())
+		return true;
+
+	bDumpedGObjects = false;
+	return SetupDumperFolder();
+}
+
+void Generator::SetProgressCallback(ProgressCallback callback)
+{
+	ProgressReporter = std::move(callback);
+}
+
+void Generator::ReportProgress(std::string_view progress)
+{
+	if (ProgressReporter)
+		ProgressReporter(progress);
 }
 
 bool Generator::SetupDumperFolder()
 {
 	try
 	{
+		fs::path NewDumperFolder;
+
 		if (!SDKFolder.empty())
 		{
-			DumperFolder = fs::path(SDKFolder);
+			NewDumperFolder = fs::path(SDKFolder);
 		}
 		else
 		{
 			std::string FolderName = (Settings::Generator::GameVersion + '-' + Settings::Generator::GameName);
 			FileNameHelper::MakeValidFileName(FolderName);
-			DumperFolder = fs::path(Settings::Generator::SDKGenerationPath) / FolderName;
+			NewDumperFolder = fs::path(Settings::Generator::SDKGenerationPath) / FolderName;
 		}
 
-		if (fs::exists(DumperFolder))
+		if (fs::exists(NewDumperFolder))
 		{
-			fs::path Old = DumperFolder.generic_string() + "_OLD";
+			fs::path Old = NewDumperFolder.generic_string() + "_OLD";
 
 			fs::remove_all(Old);
 
-			fs::rename(DumperFolder, Old);
+			fs::rename(NewDumperFolder, Old);
 		}
 
-		fs::create_directories(DumperFolder);
+		fs::create_directories(NewDumperFolder);
+		DumperFolder = std::move(NewDumperFolder);
 	}
 	catch (const std::filesystem::filesystem_error& fe)
 	{
+		DumperFolder.clear();
 		std::cerr << "Could not create required folders! Info: \n";
 		std::cerr << fe.what() << std::endl;
 		return false;

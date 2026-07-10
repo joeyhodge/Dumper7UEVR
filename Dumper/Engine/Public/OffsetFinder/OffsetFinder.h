@@ -19,15 +19,20 @@ namespace OffsetFinder
 
 		for (int i = 0; i < ObjectValuePair.size(); i++)
 		{
-			if (ObjectValuePair[i].first == nullptr)
+			const auto* ObjectAddress = static_cast<const uint8_t*>(ObjectValuePair[i].first);
+			if (ObjectAddress == nullptr || Platform::IsBadReadPtr(ObjectAddress))
 			{
-				std::cerr << "Dumper-7 ERROR: FindOffset is skipping ObjectValuePair[" << i << "] because .first is nullptr." << std::endl;
+				std::cerr << "Dumper-7 ERROR: FindOffset is skipping ObjectValuePair[" << i << "] because .first is unreadable." << std::endl;
 				continue;
 			}
 
 			for (int j = HighestFoundOffset; j < MaxOffset; j += Alignement)
 			{
-				const T TypedValueAtOffset = *reinterpret_cast<T*>(static_cast<uint8_t*>(ObjectValuePair[i].first) + j);
+				const auto* ValueAddress = ObjectAddress + j;
+				if (Platform::IsBadReadPtr(ValueAddress) || Platform::IsBadReadPtr(ValueAddress + sizeof(T) - 1))
+					continue;
+
+				const T TypedValueAtOffset = *reinterpret_cast<const T*>(ValueAddress);
 
 				if (TypedValueAtOffset == ObjectValuePair[i].second && j >= HighestFoundOffset)
 				{
@@ -58,12 +63,20 @@ namespace OffsetFinder
 
 		for (int j = StartingOffset; j <= MaxOffset; j += sizeof(void*))
 		{
-			const bool bIsAValid = !Platform::IsBadReadPtr(*reinterpret_cast<void* const*>(ObjA + j)) && (bCheckForVft ? !Platform::IsBadReadPtr(**reinterpret_cast<void** const*>(ObjA + j)) : true);
-			const bool bIsBValid = !Platform::IsBadReadPtr(*reinterpret_cast<void* const*>(ObjB + j)) && (bCheckForVft ? !Platform::IsBadReadPtr(**reinterpret_cast<void** const*>(ObjB + j)) : true);
+			const auto* CandidateAddressA = ObjA + j;
+			const auto* CandidateAddressB = ObjB + j;
+			if (Platform::IsBadReadPtr(CandidateAddressA) || Platform::IsBadReadPtr(CandidateAddressA + sizeof(void*) - 1) ||
+				Platform::IsBadReadPtr(CandidateAddressB) || Platform::IsBadReadPtr(CandidateAddressB + sizeof(void*) - 1))
+				continue;
+
+			const void* CandidateA = *reinterpret_cast<void* const*>(CandidateAddressA);
+			const void* CandidateB = *reinterpret_cast<void* const*>(CandidateAddressB);
+			const bool bIsAValid = !Platform::IsBadReadPtr(CandidateA) && (bCheckForVft ? !Platform::IsBadReadPtr(*reinterpret_cast<void* const*>(CandidateA)) : true);
+			const bool bIsBValid = !Platform::IsBadReadPtr(CandidateB) && (bCheckForVft ? !Platform::IsBadReadPtr(*reinterpret_cast<void* const*>(CandidateB)) : true);
 
 			if (bNeedsToBeInProcessMemory)
 			{
-				if (!Platform::IsAddressInProcessRange(*reinterpret_cast<void* const*>(ObjA + j)) || !Platform::IsAddressInProcessRange(*reinterpret_cast<void* const*>(ObjB + j)))
+				if (!Platform::IsAddressInProcessRange(CandidateA) || !Platform::IsAddressInProcessRange(CandidateB))
 					continue;
 			}
 

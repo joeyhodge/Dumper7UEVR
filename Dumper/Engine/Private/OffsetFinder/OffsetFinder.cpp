@@ -34,7 +34,11 @@ int32_t OffsetFinder::FindUObjectFlagsOffset()
 				if (Counter++ == 0x100)
 					break;
 
-				const int32 TypedValueAtOffset = *reinterpret_cast<int32*>(reinterpret_cast<uintptr_t>(Obj.GetAddress()) + Offset);
+				const auto* ValueAddress = reinterpret_cast<const uint8*>(Obj.GetAddress()) + Offset;
+				if (Platform::IsBadReadPtr(ValueAddress) || Platform::IsBadReadPtr(ValueAddress + sizeof(int32) - 1))
+					continue;
+
+				const int32 TypedValueAtOffset = *reinterpret_cast<const int32*>(ValueAddress);
 
 				if (TypedValueAtOffset == EnumFlagValueToSearch)
 					NumObjectsWithFlagAtOffset++;
@@ -71,6 +75,12 @@ int32_t OffsetFinder::FindUObjectClassOffset()
 		{
 			const uint8_t* CurrentClassA = NextClassA;
 			const uint8_t* CurrentClassB = NextClassB;
+			if (ClassPtrOffset < 0 || Platform::IsBadReadPtr(NextClassA) || Platform::IsBadReadPtr(NextClassB) ||
+				Platform::IsBadReadPtr(NextClassA + ClassPtrOffset) || Platform::IsBadReadPtr(NextClassA + ClassPtrOffset + sizeof(void*) - 1) ||
+				Platform::IsBadReadPtr(NextClassB + ClassPtrOffset) || Platform::IsBadReadPtr(NextClassB + ClassPtrOffset + sizeof(void*) - 1))
+			{
+				return false;
+			}
 
 			NextClassA = *reinterpret_cast<const uint8_t* const*>(NextClassA + ClassPtrOffset);
 			NextClassB = *reinterpret_cast<const uint8_t* const*>(NextClassB + ClassPtrOffset);
@@ -93,6 +103,8 @@ int32_t OffsetFinder::FindUObjectClassOffset()
 	while (Offset != OffsetNotFound)
 	{
 		Offset = GetValidPointerOffset<true>(ObjA, ObjB, Offset + sizeof(void*), 0x50);
+		if (Offset == OffsetNotFound)
+			break;
 
 		if (IsValidCyclicUClassPtrOffset(ObjA, ObjB, Offset))
 			return Offset;
@@ -156,6 +168,8 @@ int32_t FindNameOffsetForSomeClass(std::function<bool(int32_t Value)> IsPotentia
 		constexpr auto MaxAccessedSizeInUObject = 0x44;
 
 		const void* CurrentObjectOrField = (*DataSetStartIterator).GetAddress();
+		if (CurrentObjectOrField == nullptr || Platform::IsBadReadPtr(CurrentObjectOrField))
+			continue;
 
 		/*
 		* Purpose: Make sure all offsets in the UObject::Name finder can be accessed
@@ -177,6 +191,9 @@ int32_t FindNameOffsetForSomeClass(std::function<bool(int32_t Value)> IsPotentia
 			Info.NumNamesWithLowCmpIdx += (ValueAtOffset <= LowComparisonIndexUpperCap);
 		}
 	}
+
+	if (NumObjectsConsidered == 0)
+		return OffsetFinder::OffsetNotFound;
 
 	int32 FirstValidOffset = -1;
 	for (const ValueInfo& Info : PossibleOffsets)

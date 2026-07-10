@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <string_view>
 
 #include "Unreal/ObjectArray.h"
 #include "Managers/DependencyManager.h"
@@ -37,6 +39,8 @@ concept GeneratorImplementation = requires(GeneratorType t)
 class Generator
 {
 public:
+    using ProgressCallback = std::function<void(std::string_view)>;
+
     static std::string SDKFolder;
 
 private:
@@ -45,10 +49,14 @@ private:
 private:
     static inline fs::path DumperFolder;
     static inline bool bDumpedGObjects = false;
+    static inline ProgressCallback ProgressReporter{};
 
 public:
-    static void InitEngineCore();
+	static bool InitEngineCore();
     static void InitInternal();
+    static bool PrepareOutputFolder();
+    static void SetProgressCallback(ProgressCallback callback);
+    static void ReportProgress(std::string_view progress);
 
 private:
     static bool SetupDumperFolder();
@@ -58,25 +66,22 @@ private:
 
 public:
     template<GeneratorImplementation GeneratorType>
-    static void Generate() 
-    { 
-        if (DumperFolder.empty())
+    static bool Generate()
+    {
+        if (DumperFolder.empty() && !PrepareOutputFolder())
+            return false;
+
+        if (!bDumpedGObjects)
         {
-            if (!SetupDumperFolder())
-                return;
+            bDumpedGObjects = true;
+            ObjectArray::DumpObjects(DumperFolder);
 
-            if (!bDumpedGObjects)
-            {
-                bDumpedGObjects = true;
-                ObjectArray::DumpObjects(DumperFolder);
-
-                if (Settings::Internal::bUseFProperty)
-                    ObjectArray::DumpObjectsWithProperties(DumperFolder);
-            }
+            if (Settings::Internal::bUseFProperty)
+                ObjectArray::DumpObjectsWithProperties(DumperFolder);
         }
 
         if (!SetupFolders(GeneratorType::MainFolderName, GeneratorType::MainFolder, GeneratorType::SubfolderName, GeneratorType::Subfolder))
-            return;
+            return false;
 
         GeneratorType::InitPredefinedMembers();
         GeneratorType::InitPredefinedFunctions();
@@ -84,5 +89,6 @@ public:
         MemberManager::SetPredefinedMemberLookupPtr(&GeneratorType::PredefinedMembers);
 
         GeneratorType::Generate();
+        return true;
     };
 };

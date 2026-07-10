@@ -24,22 +24,31 @@ private:
 	static inline uint32 NumElementsPerChunk = 0x10000;
 	static inline uint32 SizeOfFUObjectItem = sizeof(void*) + sizeof(int32) + sizeof(int32);
 	static inline uint32 FUObjectItemInitialOffset = 0x0;
+	static inline bool bUsesExternalObjectAccess = false;
+	static inline bool bExternalLayoutValidated = false;
 
 public:
 	static inline std::string DecryptionLambdaStr;
+	using ExternalObjectCountFn = int32(*)();
+	using ExternalObjectLookupFn = void*(*)(int32);
 
 private:
 	static inline void*(*ByIndex)(void* ObjectsArray, int32 Index, uint32 FUObjectItemSize, uint32 FUObjectItemOffset, uint32 PerChunk) = nullptr;
+	static inline ExternalObjectCountFn ExternalObjectCount = nullptr;
+	static inline ExternalObjectLookupFn ExternalObjectLookup = nullptr;
 
 	static inline uint8_t* (*DecryptPtr)(void* ObjPtr) = [](void* Ptr) -> uint8* { return static_cast<uint8*>(Ptr); };
 
 private:
-	static void InitializeFUObjectItem(uint8_t* FirstItemPtr);
+	static bool InitializeFUObjectItem(uint8_t* FirstItemPtr);
 
 public:
 	static void InitDecryption(uint8_t* (*DecryptionFunction)(void* ObjPtr), const char* DecryptionLambdaAsStr);
 
-	static void Init(bool bScanAllMemory = false, const char* const ModuleName = Settings::General::DefaultModuleName);
+	// Returns false instead of terminating the host process when no valid object-array layout is found.
+	static bool Init(bool bScanAllMemory = false, const char* const ModuleName = Settings::General::DefaultModuleName);
+	// Uses UEVR's validated accessor for traversal while retaining a raw layout only when it can be verified.
+	static bool InitWithExternalAccess(void* RawGObjects, int32 ExpectedObjectCount, uint32 ItemStride, ExternalObjectCountFn CountFn, ExternalObjectLookupFn LookupFn);
 
 	static void Init(int32 GObjectsOffset, const FFixedUObjectArrayLayout& ObjectArrayLayout = FFixedUObjectArrayLayout(), const char* const ModuleName = Settings::General::DefaultModuleName);
 	static void Init(int32 GObjectsOffset, int32 ElementsPerChunk, const FChunkedFixedUObjectArrayLayout& ObjectArrayLayout = FChunkedFixedUObjectArrayLayout(), const char* const ModuleName = Settings::General::DefaultModuleName);
@@ -51,6 +60,18 @@ public:
 	static int32 Max();
 	static int32 NumChunks();
 	static int32 MaxChunks();
+
+	static inline const std::string& GetInitializationError()
+	{
+		return InitializationError;
+	}
+
+	static inline bool IsInitialized()
+	{
+		return (bUsesExternalObjectAccess && ExternalObjectCount != nullptr && ExternalObjectLookup != nullptr) || (GObjects != nullptr && ByIndex != nullptr);
+	}
+
+	static std::string GetInitializationSummary();
 
 	template<typename UEType = UEObject>
 	static UEType GetByIndex(int32 Index);
@@ -93,6 +114,9 @@ public:
 	{
 		return GObjects;
 	}
+
+private:
+	static inline std::string InitializationError;
 };
 
 #ifndef InitObjectArrayDecryption

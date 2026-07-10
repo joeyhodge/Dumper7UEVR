@@ -5,6 +5,8 @@
 #include "OffsetFinder/Offsets.h"
 #include "OffsetFinder/OffsetFinder.h"
 
+#include "Generators/Generator.h"
+
 #include "Unreal/ObjectArray.h"
 #include "Unreal/NameArray.h"
 
@@ -276,6 +278,11 @@ void Off::InSDK::Text::InitTextOffsets()
 
 void Off::Init()
 {
+	auto ReportOffsetStage = [](std::string_view stage)
+	{
+		Generator::ReportProgress("Core offsets: " + std::string(stage));
+	};
+
 	auto OverwriteIfInvalidOffset = [](int32& Offset, int32 DefaultValue)
 	{
 		if (Offset == OffsetFinder::OffsetNotFound)
@@ -285,50 +292,64 @@ void Off::Init()
 		}
 	};
 
+	ReportOffsetStage("UObject flags");
 	Off::UObject::Flags = OffsetFinder::FindUObjectFlagsOffset();
 	OverwriteIfInvalidOffset(Off::UObject::Flags, sizeof(void*)); // Default to right after VTable
 	std::cerr << std::format("Off::UObject::Flags: 0x{:X}\n", Off::UObject::Flags);
 
+	ReportOffsetStage("UObject internal index");
 	Off::UObject::Index = OffsetFinder::FindUObjectIndexOffset();
 	OverwriteIfInvalidOffset(Off::UObject::Index, (Off::UObject::Flags + sizeof(int32))); // Default to right after Flags
 	std::cerr << std::format("Off::UObject::Index: 0x{:X}\n", Off::UObject::Index);
 
+	ReportOffsetStage("UObject class");
 	Off::UObject::Class = OffsetFinder::FindUObjectClassOffset();
 	OverwriteIfInvalidOffset(Off::UObject::Class, (Off::UObject::Index + sizeof(int32))); // Default to right after Index
 	std::cerr << std::format("Off::UObject::Class: 0x{:X}\n", Off::UObject::Class);
 
+	ReportOffsetStage("UObject outer");
 	Off::UObject::Outer = OffsetFinder::FindUObjectOuterOffset();
 	std::cerr << std::format("Off::UObject::Outer: 0x{:X}\n", Off::UObject::Outer);
 
+	ReportOffsetStage("UObject name");
 	Off::UObject::Name = OffsetFinder::FindUObjectNameOffset();
 	OverwriteIfInvalidOffset(Off::UObject::Name, (Off::UObject::Class + sizeof(void*))); // Default to right after Class
 	std::cerr << std::format("Off::UObject::Name: 0x{:X}\n\n", Off::UObject::Name);
 
 	OverwriteIfInvalidOffset(Off::UObject::Outer, (Off::UObject::Name + sizeof(int32) + sizeof(int32)));  // Default to right after Name
 
+	ReportOffsetStage("FName settings");
 	OffsetFinder::InitFNameSettings();
 
+	ReportOffsetStage("name array post-init");
 	::NameArray::PostInit();
 
 	// Castflags needs to stay here since the FindChildOffset() uses CastFlags
+	ReportOffsetStage("UClass cast flags");
 	Off::UClass::CastFlags = OffsetFinder::FindCastFlagsOffset();
 	std::cerr << std::format("Off::UClass::CastFlags: 0x{:X}\n", Off::UClass::CastFlags);
 
+	ReportOffsetStage("UStruct children");
 	Off::UStruct::Children = OffsetFinder::FindChildOffset();
 	std::cerr << std::format("Off::UStruct::Children: 0x{:X}\n", Off::UStruct::Children);
 
+	ReportOffsetStage("UField next");
 	Off::UField::Next = OffsetFinder::FindUFieldNextOffset();
 	std::cerr << std::format("Off::UField::Next: 0x{:X}\n", Off::UField::Next);
 
+	ReportOffsetStage("UStruct super");
 	Off::UStruct::SuperStruct = OffsetFinder::FindSuperOffset();
 	std::cerr << std::format("Off::UStruct::SuperStruct: 0x{:X}\n", Off::UStruct::SuperStruct);
 
+	ReportOffsetStage("UStruct size");
 	Off::UStruct::Size = OffsetFinder::FindStructSizeOffset();
 	std::cerr << std::format("Off::UStruct::Size: 0x{:X}\n", Off::UStruct::Size);
 
+	ReportOffsetStage("UStruct alignment");
 	Off::UStruct::MinAlignment = OffsetFinder::FindMinAlignmentOffset();
 	std::cerr << std::format("Off::UStruct::MinAlignment: 0x{:X}\n", Off::UStruct::MinAlignment);
 
+	ReportOffsetStage("UClass cast flags verification");
 	Off::UClass::CastFlags = OffsetFinder::FindCastFlagsOffset();
 	std::cerr << std::format("Off::UClass::CastFlags: 0x{:X}\n", Off::UClass::CastFlags);
 
@@ -338,18 +359,23 @@ void Off::Init()
 	{
 		std::cerr << std::format("\nGame uses FProperty system\n\n");
 
+		ReportOffsetStage("UStruct child properties");
 		Off::UStruct::ChildProperties = OffsetFinder::FindChildPropertiesOffset();
 		std::cerr << std::format("Off::UStruct::ChildProperties: 0x{:X}\n", Off::UStruct::ChildProperties);
 
-		OffsetFinder::FixupHardcodedOffsets(); // must be called after FindChildPropertiesOffset 
+		ReportOffsetStage("FField hardcoded fixups");
+		OffsetFinder::FixupHardcodedOffsets(); // must be called after FindChildPropertiesOffset
 
+		ReportOffsetStage("FField next");
 		Off::FField::Next = OffsetFinder::FindFFieldNextOffset();
 		std::cerr << std::format("Off::FField::Next: 0x{:X}\n", Off::FField::Next);
 
+		ReportOffsetStage("FField class");
 		Off::FField::Class = OffsetFinder::FindFFieldClassOffset();
 		std::cerr << std::format("Off::FField::Class: 0x{:X}\n", Off::FField::Class);
 
 		// Comment out this line if you're crashing here and see if the NewFindFFieldNameOffset might work!
+		ReportOffsetStage("FField name");
 		Off::FField::Name = OffsetFinder::FindFFieldNameOffset();
 		//Off::FField::Name = OffsetFinder::NewFindFFieldNameOffset();
 
@@ -366,18 +392,23 @@ void Off::Init()
 		std::cerr << std::format("Off::FField::Flags: 0x{:X}\n", Off::FField::Flags);
 	}
 
+	ReportOffsetStage("UClass default object");
 	Off::UClass::ClassDefaultObject = OffsetFinder::FindDefaultObjectOffset();
 	std::cerr << std::format("Off::UClass::ClassDefaultObject: 0x{:X}\n", Off::UClass::ClassDefaultObject);
 
+	ReportOffsetStage("UClass interfaces");
 	Off::UClass::ImplementedInterfaces = OffsetFinder::FindImplementedInterfacesOffset();
 	std::cerr << std::format("Off::UClass::ImplementedInterfaces: 0x{:X}\n", Off::UClass::ImplementedInterfaces);
 
+	ReportOffsetStage("UEnum names");
 	Off::UEnum::Names = OffsetFinder::FindEnumNamesOffset();
 	std::cerr << std::format("Off::UEnum::Names: 0x{:X}\n", Off::UEnum::Names) << std::endl;
 
+	ReportOffsetStage("UFunction flags");
 	Off::UFunction::FunctionFlags = OffsetFinder::FindFunctionFlagsOffset();
 	std::cerr << std::format("Off::UFunction::FunctionFlags: 0x{:X}\n", Off::UFunction::FunctionFlags);
 
+	ReportOffsetStage("UFunction native pointer");
 	Off::UFunction::ExecFunction = OffsetFinder::FindFunctionNativeFuncOffset();
 	std::cerr << std::format("Off::UFunction::ExecFunction: 0x{:X}\n", Off::UFunction::ExecFunction) << std::endl;
 

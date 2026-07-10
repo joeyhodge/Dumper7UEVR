@@ -40,6 +40,11 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Dumper/Engine/Public/OffsetFinder
     ${CMAKE_SOURCE_DIR}/Dumper/Engine/Public/Unreal
 
+    # Platform headers are included as "Platform.h" throughout the dumper.
+    ${CMAKE_SOURCE_DIR}/Dumper/Platform
+    ${CMAKE_SOURCE_DIR}/Dumper/Platform/Private
+    ${CMAKE_SOURCE_DIR}/Dumper/Platform/Public
+
     # Generator
     ${CMAKE_SOURCE_DIR}/Dumper/Generator
     ${CMAKE_SOURCE_DIR}/Dumper/Generator/Private
@@ -73,4 +78,13 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 set_target_properties(${PROJECT_NAME} PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS ON
     VS_GLOBAL_KEYWORD "Win32Proj"
-) 
+)
+
+if(MSVC)
+    # Keep a matching release PDB with the plugin so in-game dump failures remain actionable.
+    target_compile_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:/Zi>)
+    target_link_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:/DEBUG>)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        PDB_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
+    )
+endif()

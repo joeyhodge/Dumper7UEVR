@@ -217,9 +217,8 @@ void StructManager::InitSizesAndIsFinal()
 
 			if (It == StructInfoOverrides.end())
 			{
-				std::cerr << "\n\n\nDumper-7: Error, struct wasn't found in 'StructInfoOverrides'! Exiting...\n\n\n" << std::endl;
-				Sleep(10000);
-				exit(1);
+				std::cerr << "Dumper-7: struct wasn't found in 'StructInfoOverrides'; skipping its trailing-padding adjustment.\n" << std::endl;
+				continue;
 			}
 
 			StructInfo& Info = It->second;

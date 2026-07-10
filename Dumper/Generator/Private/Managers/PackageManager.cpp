@@ -1,5 +1,6 @@
 #include "Unreal/ObjectArray.h"
 
+#include "Generators/Generator.h"
 #include "Managers/PackageManager.h"
 
 /* Required for marking cyclic-headers in the StructManager */
@@ -241,9 +242,17 @@ namespace PackageManagerUtils
 void PackageManager::InitDependencies()
 {
 	// Collects all packages required to compile this file
+	const int32 TotalObjects = ObjectArray::Num();
+	int32 ProcessedObjects = 0;
 
 	for (auto Obj : ObjectArray())
 	{
+		++ProcessedObjects;
+		if ((ProcessedObjects % 0x1000) == 0 || ProcessedObjects == TotalObjects)
+		{
+			Generator::ReportProgress("Package dependency scan " + std::to_string(ProcessedObjects) + "/" + std::to_string(TotalObjects));
+		}
+
 		if (Obj.HasAnyFlags(EObjectFlags::ClassDefaultObject))
 			continue;
 
@@ -323,6 +332,8 @@ void PackageManager::InitDependencies()
 			Info.Enums.push_back(Obj.GetIndex());
 		}
 	}
+
+	Generator::ReportProgress("Package dependency scan complete: " + std::to_string(PackageInfos.size()) + " packages");
 }
 
 void PackageManager::InitNames()

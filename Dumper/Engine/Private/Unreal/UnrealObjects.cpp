@@ -466,10 +466,13 @@ std::vector<std::pair<FName, int64>> UEEnum::GetNameValuePairs() const
 
 		if (!bIsNamesPtrTagged)
 		{
-			/* StaticNamesUTF8 is not supported yet. See: https://github.com/EpicGames/UnrealEngine/blob/ue5-main/Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h#L3408*/
-			std::cerr << "Dumper-7 [UEEnum::GetNameValuePairs()]: UEnum::Names pointer is tagged! This is not supported yet!" << std::endl;
-			Sleep(100'000);
-			exit(1);
+			/*
+			 * A compiled-in enum may still expose immutable UTF-8 names while the game
+			 * finishes UObject construction. There is no FName payload to emit yet, so
+			 * leave that enum empty rather than sleeping and terminating the host.
+			 */
+			std::cerr << "Dumper-7 [UEEnum::GetNameValuePairs()]: UEnum::Names uses StaticNamesUTF8; emitting an empty enum body.\n";
+			return Ret;
 		}
 
 		const int64* Values = reinterpret_cast<int64*>(*reinterpret_cast<uintptr_t*>(Object + EnumNamesOffset + 0x8) & PointerMaskNoTag);
@@ -1045,6 +1048,18 @@ int32 UEProperty::GetAlignment() const
 
 		return  GetSize() - ValueProperty.GetSize();
 	}
+	else if (TypeFlags & EClassCastFlags::Utf8StrProperty)
+	{
+		return alignof(FUtf8String);
+	}
+	else if (TypeFlags & EClassCastFlags::AnsiStrProperty)
+	{
+		return alignof(FAnsiString);
+	}
+	else if (TypeFlags & EClassCastFlags::VCellProperty)
+	{
+		return sizeof(void*);
+	}
 
 	if (Settings::Internal::bUseFProperty)
 	{
@@ -1141,6 +1156,14 @@ std::string UEProperty::GetCppType() const
 	else if (TypeFlags & EClassCastFlags::StrProperty)
 	{
 		return "class FString";
+	}
+	else if (TypeFlags & EClassCastFlags::Utf8StrProperty)
+	{
+		return "FUtf8String";
+	}
+	else if (TypeFlags & EClassCastFlags::AnsiStrProperty)
+	{
+		return "FAnsiString";
 	}
 	else if (TypeFlags & EClassCastFlags::TextProperty)
 	{
