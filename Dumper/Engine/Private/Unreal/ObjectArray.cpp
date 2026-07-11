@@ -67,6 +67,120 @@ constexpr inline std::array FChunkedFixedUObjectArrayLayouts =
 	}
 };
 
+namespace
+{
+	bool IsCurrentDumpObject(UEObject Object, int32 ExpectedIndex = -1)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class + sizeof(void*) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Name) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Name + sizeof(uint64) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Outer) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Outer + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || (ExpectedIndex >= 0 && Index != ExpectedIndex))
+			return false;
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr ||
+			Platform::IsBadReadPtr(Class) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+		{
+			return false;
+		}
+
+		return ObjectArray::GetByIndex(Index).GetAddress() == Object.GetAddress();
+	}
+
+	bool BuildObjectDumpNameUnsafe(UEObject Object, bool bWithPathname, std::string* OutName)
+	{
+		if (OutName == nullptr || !IsCurrentDumpObject(Object))
+			return false;
+
+		const UEClass Class = Object.GetClass();
+		if (!IsCurrentDumpObject(Class))
+			return false;
+
+		std::string OuterPath;
+		UEObject Outer = Object.GetOuter();
+		constexpr int32 MaxOuterDepth = 0x100;
+		int32 OuterDepth = 0;
+
+		for (; Outer && OuterDepth < MaxOuterDepth; Outer = Outer.GetOuter(), ++OuterDepth)
+		{
+			if (!IsCurrentDumpObject(Outer))
+				return false;
+
+			OuterPath = (bWithPathname ? Outer.GetNameWithPath() : Outer.GetName()) + "." + OuterPath;
+		}
+
+		if (Outer)
+			return false;
+
+		std::string Name = bWithPathname ? Class.GetNameWithPath() : Class.GetName();
+		Name += " ";
+		Name += OuterPath;
+		Name += bWithPathname ? Object.GetNameWithPath() : Object.GetName();
+		*OutName = std::move(Name);
+		return true;
+	}
+
+	bool TryBuildObjectDumpName(UEObject Object, bool bWithPathname, std::string* OutName)
+	{
+#if defined(_MSC_VER)
+		__try
+		{
+			return BuildObjectDumpNameUnsafe(Object, bWithPathname, OutName);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+#else
+		return BuildObjectDumpNameUnsafe(Object, bWithPathname, OutName);
+#endif
+	}
+
+	bool BuildPropertyDumpLineUnsafe(UEProperty Property, std::string* OutLine)
+	{
+		if (OutLine == nullptr || !Property)
+			return false;
+
+		*OutLine = std::format(
+			"[{:08X}] {{{}}}     {} {}\n",
+			Property.GetOffset(),
+			Property.GetAddress(),
+			Property.GetPropClassName(),
+			Property.GetName());
+		return true;
+	}
+
+	bool TryBuildPropertyDumpLine(UEProperty Property, std::string* OutLine)
+	{
+#if defined(_MSC_VER)
+		__try
+		{
+			return BuildPropertyDumpLineUnsafe(Property, OutLine);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+#else
+		return BuildPropertyDumpLineUnsafe(Property, OutLine);
+#endif
+	}
+}
+
 bool IsAddressValidGObjects(const uintptr_t Address, const FFixedUObjectArrayLayout& Layout)
 {
 	/* It is assumed that the FUObjectItem layout is constant amongst all games using FFixedUObjectArray for ObjObjects. */
@@ -521,16 +635,16 @@ void ObjectArray::DumpObjects(const fs::path& Path, bool bWithPathname)
 	DumpStream << (!Settings::Generator::GameVersion.empty() && !Settings::Generator::GameName.empty() ? (Settings::Generator::GameVersion + '-' + Settings::Generator::GameName) + "\n\n" : "");
 	DumpStream << "Count: " << Num() << "\n\n\n";
 
-	for (auto Object : ObjectArray())
+	const int32 TotalObjects = Num();
+	for (int32 Index = 0; Index < TotalObjects; ++Index)
 	{
-		if (!bWithPathname)
-		{
-			DumpStream << std::format("[{:08X}] {{{}}} {}\n", Object.GetIndex(), Object.GetAddress(), Object.GetFullName());
-		}
-		else
-		{
-			DumpStream << std::format("[{:08X}] {{{}}} {}\n", Object.GetIndex(), Object.GetAddress(), Object.GetPathName());
-		}
+		const UEObject Object = GetByIndex(Index);
+		if (!IsCurrentDumpObject(Object, Index))
+			continue;
+
+		std::string ObjectName;
+		if (TryBuildObjectDumpName(Object, bWithPathname, &ObjectName))
+			DumpStream << std::format("[{:08X}] {{{}}} {}\n", Index, Object.GetAddress(), ObjectName);
 	}
 
 	DumpStream.close();
@@ -544,22 +658,26 @@ void ObjectArray::DumpObjectsWithProperties(const fs::path& Path, bool bWithPath
 	DumpStream << (!Settings::Generator::GameVersion.empty() && !Settings::Generator::GameName.empty() ? (Settings::Generator::GameVersion + '-' + Settings::Generator::GameName) + "\n\n" : "");
 	DumpStream << "Count: " << Num() << "\n\n\n";
 
-	for (auto Object : ObjectArray())
+	const int32 TotalObjects = Num();
+	for (int32 Index = 0; Index < TotalObjects; ++Index)
 	{
-		if (!bWithPathname)
-		{
-			DumpStream << std::format("[{:08X}] {{{}}} {}\n", Object.GetIndex(), Object.GetAddress(), Object.GetFullName());
-		}
-		else
-		{
-			DumpStream << std::format("[{:08X}] {{{}}} {}\n", Object.GetIndex(), Object.GetAddress(), Object.GetPathName());
-		}
+		const UEObject Object = GetByIndex(Index);
+		if (!IsCurrentDumpObject(Object, Index))
+			continue;
+
+		std::string ObjectName;
+		if (!TryBuildObjectDumpName(Object, bWithPathname, &ObjectName))
+			continue;
+
+		DumpStream << std::format("[{:08X}] {{{}}} {}\n", Index, Object.GetAddress(), ObjectName);
 
 		if (Object.IsA(EClassCastFlags::Struct))
 		{
 			for (UEProperty Prop : Object.Cast<UEStruct>().GetProperties())
 			{
-				DumpStream << std::format("[{:08X}] {{{}}}     {} {}\n", Prop.GetOffset(), Prop.GetAddress(), Prop.GetPropClassName(), Prop.GetName());
+				std::string PropertyLine;
+				if (TryBuildPropertyDumpLine(Prop, &PropertyLine))
+					DumpStream << PropertyLine;
 			}
 		}
 	}

@@ -276,7 +276,11 @@ public:
 
 	static inline PackageInfoHandle GetInfo(int32 PackageIndex)
 	{
-		return PackageInfos.at(PackageIndex);
+		const auto It = PackageInfos.find(PackageIndex);
+		if (It == PackageInfos.end())
+			throw std::out_of_range("missing PackageInfo for object index " + std::to_string(PackageIndex));
+
+		return It->second;
 	}
 
 	static inline PackageInfoHandle GetInfo(const UEObject Package)
@@ -284,7 +288,7 @@ public:
 		if (!Package)
 			return {};
 
-		return PackageInfos.at(Package.GetIndex());
+		return GetInfo(Package.GetIndex());
 	}
 
 	static inline PackageInfoIterator IterateOverPackageInfos()

@@ -284,9 +284,36 @@ void OffsetFinder::FixupHardcodedOffsets()
 		*/
 
 		const int32 OffsetToCheck = Off::FField::Owner + 0x8;
-		void* PossibleNextPtrOrBool0 = *(void**)((uint8*)ObjectArray::FindClassFast("Actor").GetChildProperties().GetAddress() + OffsetToCheck);
-		void* PossibleNextPtrOrBool1 = *(void**)((uint8*)ObjectArray::FindClassFast("ActorComponent").GetChildProperties().GetAddress() + OffsetToCheck);
-		void* PossibleNextPtrOrBool2 = *(void**)((uint8*)ObjectArray::FindClassFast("Pawn").GetChildProperties().GetAddress() + OffsetToCheck);
+		auto ReadNextCandidate = [OffsetToCheck](const char* ClassName, void*& OutCandidate) -> bool
+		{
+			const UEClass FieldOwner = ObjectArray::FindClassFast(ClassName);
+			if (!FieldOwner)
+				return false;
+
+			const UEFField ChildProperties = FieldOwner.GetChildProperties();
+			const auto* ChildAddress = static_cast<const uint8*>(ChildProperties.GetAddress());
+
+			if (ChildAddress == nullptr || Platform::IsBadReadPtr(ChildAddress) ||
+				Platform::IsBadReadPtr(ChildAddress + OffsetToCheck) ||
+				Platform::IsBadReadPtr(ChildAddress + OffsetToCheck + sizeof(void*) - 1))
+			{
+				return false;
+			}
+
+			OutCandidate = *reinterpret_cast<void* const*>(ChildAddress + OffsetToCheck);
+			return true;
+		};
+
+		void* PossibleNextPtrOrBool0 = nullptr;
+		void* PossibleNextPtrOrBool1 = nullptr;
+		void* PossibleNextPtrOrBool2 = nullptr;
+		if (!ReadNextCandidate("Actor", PossibleNextPtrOrBool0) ||
+			!ReadNextCandidate("ActorComponent", PossibleNextPtrOrBool1) ||
+			!ReadNextCandidate("Pawn", PossibleNextPtrOrBool2))
+		{
+			std::cerr << "Dumper-7: Skipping FFieldVariant layout probe because child-property candidates are unavailable.\n";
+			return;
+		}
 
 		auto IsValidPtr = [](void* a) -> bool
 		{
@@ -504,6 +531,75 @@ int32_t OffsetFinder::FindFFieldClassOffset()
 	const UEFField VectorChild = ObjectArray::FindStructFast("Vector").GetChildProperties();
 
 	return GetValidPointerOffset<false>(GuidChild.GetAddress(), VectorChild.GetAddress(), 0x8, 0x30, true);
+}
+
+int32_t OffsetFinder::FindFieldClassCastFlagsOffset()
+{
+	const UEFField GuidChild = ObjectArray::FindStructFast("Guid").GetChildProperties();
+	const UEFField ColorChild = ObjectArray::FindStructFast("Color").GetChildProperties();
+	if (!GuidChild || !ColorChild)
+		return OffsetNotFound;
+
+	if (Off::FField::Class < 0x0 || Off::FField::Class > 0x30)
+		return OffsetNotFound;
+
+	auto ReadFieldClass = [](const UEFField& Field) -> const uint8*
+	{
+		const auto* FieldAddress = static_cast<const uint8*>(Field.GetAddress());
+		if (FieldAddress == nullptr || Platform::IsBadReadPtr(FieldAddress + Off::FField::Class) ||
+			Platform::IsBadReadPtr(FieldAddress + Off::FField::Class + sizeof(void*) - 1))
+		{
+			return nullptr;
+		}
+
+		const auto* FieldClass = *reinterpret_cast<const uint8* const*>(FieldAddress + Off::FField::Class);
+		if (FieldClass == nullptr || Platform::IsBadReadPtr(FieldClass) || Platform::IsBadReadPtr(FieldClass + 0x47))
+			return nullptr;
+
+		return FieldClass;
+	};
+
+	const uint8* GuidClass = ReadFieldClass(GuidChild);
+	const uint8* ColorClass = ReadFieldClass(ColorChild);
+	if (GuidClass == nullptr || ColorClass == nullptr)
+		return OffsetNotFound;
+
+	auto ReadCastFlags = [](const uint8* FieldClass, int32 Offset, EClassCastFlags& OutFlags) -> bool
+	{
+		const auto* Address = FieldClass + Offset;
+		if (Platform::IsBadReadPtr(Address) || Platform::IsBadReadPtr(Address + sizeof(EClassCastFlags) - 1))
+			return false;
+
+		OutFlags = *reinterpret_cast<const EClassCastFlags*>(Address);
+		return true;
+	};
+
+	auto HasAllFlags = [](EClassCastFlags Value, EClassCastFlags Required) -> bool
+	{
+		const uint64 RawValue = static_cast<uint64>(Value);
+		const uint64 RawRequired = static_cast<uint64>(Required);
+		return (RawValue & RawRequired) == RawRequired;
+	};
+
+	const EClassCastFlags CommonNumericFlags =
+		EClassCastFlags::Field | EClassCastFlags::Property | EClassCastFlags::NumericProperty;
+	const EClassCastFlags GuidTypeFlags = EClassCastFlags::UInt32Property | EClassCastFlags::IntProperty;
+
+	for (int32 Offset = sizeof(void*); Offset <= 0x40; Offset += sizeof(void*))
+	{
+		EClassCastFlags GuidFlags{};
+		EClassCastFlags ColorFlags{};
+		if (!ReadCastFlags(GuidClass, Offset, GuidFlags) || !ReadCastFlags(ColorClass, Offset, ColorFlags))
+			continue;
+
+		const bool bGuidMatches = HasAllFlags(GuidFlags, CommonNumericFlags) &&
+			(static_cast<uint64>(GuidFlags) & static_cast<uint64>(GuidTypeFlags)) != 0;
+		const bool bColorMatches = HasAllFlags(ColorFlags, CommonNumericFlags | EClassCastFlags::ByteProperty);
+		if (bGuidMatches && bColorMatches)
+			return Offset;
+	}
+
+	return OffsetNotFound;
 }
 
 // This function assumes that the EnumObj passed in is valid and that the values of the enum are starting at 0

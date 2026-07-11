@@ -2,9 +2,65 @@
 
 #include "Generators/Generator.h"
 #include "Managers/PackageManager.h"
+#include "OffsetFinder/Offsets.h"
+#include "Platform.h"
 
 /* Required for marking cyclic-headers in the StructManager */
 #include "Managers/StructManager.h"
+
+namespace
+{
+	bool IsCurrentPackageObject(UEObject Object)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Flags) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Flags + sizeof(EObjectFlags) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class + sizeof(void*) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Outer) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Outer + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr ||
+			Platform::IsBadReadPtr(Class) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+		{
+			return false;
+		}
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		return Index >= 0 && Index < ObjectArray::Num() &&
+			ObjectArray::GetByIndex(Index).GetAddress() == Object.GetAddress();
+	}
+
+	int32 GetCurrentPackageIndex(UEObject Object)
+	{
+		if (!IsCurrentPackageObject(Object))
+			return -1;
+
+		constexpr int32 MaxOuterDepth = 0x100;
+		for (int32 Depth = 0; Depth < MaxOuterDepth; ++Depth)
+		{
+			const UEObject Outer = Object.GetOuter();
+			if (!Outer)
+				return Object.GetIndex();
+
+			if (!IsCurrentPackageObject(Outer))
+				return -1;
+
+			Object = Outer;
+		}
+
+		return -1;
+	}
+}
 
 inline void BooleanOrEqual(bool& b1, bool b2)
 {
@@ -125,43 +181,53 @@ namespace PackageManagerUtils
 {
 	void GetPropertyDependency(UEProperty Prop, std::unordered_set<int32>& Store)
 	{
+		if (!Prop)
+			return;
+
 		if (Prop.IsA(EClassCastFlags::StructProperty))
 		{
-			Store.insert(Prop.Cast<UEStructProperty>().GetUnderlayingStruct().GetIndex());
+			if (const UEStruct UnderlyingStruct = Prop.Cast<UEStructProperty>().GetUnderlayingStruct();
+				IsCurrentPackageObject(UnderlyingStruct))
+				Store.insert(UnderlyingStruct.GetIndex());
 		}
 		else if (Prop.IsA(EClassCastFlags::EnumProperty))
 		{
-			if (UEObject Enum = Prop.Cast<UEEnumProperty>().GetEnum())
+			if (UEObject Enum = Prop.Cast<UEEnumProperty>().GetEnum(); IsCurrentPackageObject(Enum))
 				Store.insert(Enum.GetIndex());
 		}
 		else if (Prop.IsA(EClassCastFlags::ByteProperty))
 		{
-			if (UEObject Enum = Prop.Cast<UEByteProperty>().GetEnum())
+			if (UEObject Enum = Prop.Cast<UEByteProperty>().GetEnum(); IsCurrentPackageObject(Enum))
 				Store.insert(Enum.GetIndex());
 		}
 		else if (Prop.IsA(EClassCastFlags::ArrayProperty))
 		{
-			GetPropertyDependency(Prop.Cast<UEArrayProperty>().GetInnerProperty(), Store);
+			if (const UEProperty Inner = Prop.Cast<UEArrayProperty>().GetInnerProperty())
+				GetPropertyDependency(Inner, Store);
 		}
 		else if (Prop.IsA(EClassCastFlags::SetProperty))
 		{
-			GetPropertyDependency(Prop.Cast<UESetProperty>().GetElementProperty(), Store);
+			if (const UEProperty Element = Prop.Cast<UESetProperty>().GetElementProperty())
+				GetPropertyDependency(Element, Store);
 		}
 		else if (Prop.IsA(EClassCastFlags::MapProperty))
 		{
-			GetPropertyDependency(Prop.Cast<UEMapProperty>().GetKeyProperty(), Store);
-			GetPropertyDependency(Prop.Cast<UEMapProperty>().GetValueProperty(), Store);
+			if (const UEProperty Key = Prop.Cast<UEMapProperty>().GetKeyProperty())
+				GetPropertyDependency(Key, Store);
+			if (const UEProperty Value = Prop.Cast<UEMapProperty>().GetValueProperty())
+				GetPropertyDependency(Value, Store);
 		}
 		else if (Prop.IsA(EClassCastFlags::OptionalProperty) && !Prop.IsA(EClassCastFlags::ObjectPropertyBase))
 		{
-			GetPropertyDependency(Prop.Cast<UEOptionalProperty>().GetValueProperty(), Store);
+			if (const UEProperty Value = Prop.Cast<UEOptionalProperty>().GetValueProperty())
+				GetPropertyDependency(Value, Store);
 		}
 		else if (Prop.IsA(EClassCastFlags::DelegateProperty) || Prop.IsA(EClassCastFlags::MulticastInlineDelegateProperty))
 		{
 			const bool bIsNormalDeleage = !Prop.IsA(EClassCastFlags::MulticastInlineDelegateProperty);
 			UEFunction SignatureFunction = bIsNormalDeleage ? Prop.Cast<UEDelegateProperty>().GetSignatureFunction() : Prop.Cast<UEMulticastInlineDelegateProperty>().GetSignatureFunction();
 
-			if (!SignatureFunction)
+			if (!IsCurrentPackageObject(SignatureFunction))
 				return;
 
 			for (UEProperty DelegateParam : SignatureFunction.GetProperties())
@@ -174,6 +240,8 @@ namespace PackageManagerUtils
 	std::unordered_set<int32> GetDependencies(UEStruct Struct, int32 StructIndex)
 	{
 		std::unordered_set<int32> Dependencies;
+		if (!IsCurrentPackageObject(Struct))
+			return Dependencies;
 
 		const int32 StructIdx = Struct.GetIndex();
 
@@ -191,7 +259,10 @@ namespace PackageManagerUtils
 	{
 		for (int32 Dependency : Dependencies)
 		{
-			const int32 PackageIdx = ObjectArray::GetByIndex(Dependency).GetPackageIndex();
+			const UEObject DependencyObject = ObjectArray::GetByIndex(Dependency);
+			const int32 PackageIdx = GetCurrentPackageIndex(DependencyObject);
+			if (PackageIdx < 0)
+				continue;
 
 
 			if (bAllowToIncludeOwnPackage || PackageIdx != StructPackageIdx)
@@ -209,10 +280,12 @@ namespace PackageManagerUtils
 		{
 			UEObject DependencyObject = ObjectArray::GetByIndex(Dependency);
 
-			if (!DependencyObject.IsA(EClassCastFlags::Enum))
+			if (!IsCurrentPackageObject(DependencyObject) || !DependencyObject.IsA(EClassCastFlags::Enum))
 				continue;
 
-			const int32 PackageIdx = DependencyObject.GetPackageIndex();
+			const int32 PackageIdx = GetCurrentPackageIndex(DependencyObject);
+			if (PackageIdx < 0)
+				continue;
 
 			if (bAllowToIncludeOwnPackage || PackageIdx != StructPackageIdx)
 			{
@@ -230,8 +303,10 @@ namespace PackageManagerUtils
 		for (int32 DependencyStructIdx : Dependenies)
 		{
 			UEObject Obj = ObjectArray::GetByIndex(DependencyStructIdx);
+			if (!IsCurrentPackageObject(Obj))
+				continue;
 
-			if (Obj.GetPackageIndex() == StructPackageIndex && !Obj.IsA(EClassCastFlags::Enum))
+			if (GetCurrentPackageIndex(Obj) == StructPackageIndex && !Obj.IsA(EClassCastFlags::Enum))
 				TempSet.insert(DependencyStructIdx);
 		}
 
@@ -248,15 +323,17 @@ void PackageManager::InitDependencies()
 	for (auto Obj : ObjectArray())
 	{
 		++ProcessedObjects;
-		if ((ProcessedObjects % 0x1000) == 0 || ProcessedObjects == TotalObjects)
+		if (ProcessedObjects == 1 || (ProcessedObjects % 0x400) == 0 || ProcessedObjects == TotalObjects)
 		{
 			Generator::ReportProgress("Package dependency scan " + std::to_string(ProcessedObjects) + "/" + std::to_string(TotalObjects));
 		}
 
-		if (Obj.HasAnyFlags(EObjectFlags::ClassDefaultObject))
+		if (!IsCurrentPackageObject(Obj) || Obj.HasAnyFlags(EObjectFlags::ClassDefaultObject))
 			continue;
 
-		int32 CurrentPackageIdx = Obj.GetPackageIndex();
+		const int32 CurrentPackageIdx = GetCurrentPackageIndex(Obj);
+		if (CurrentPackageIdx < 0)
+			continue;
 
 		const bool bIsStruct = Obj.IsA(EClassCastFlags::Struct);
 		const bool bIsClass = Obj.IsA(EClassCastFlags::Class);
@@ -272,7 +349,7 @@ void PackageManager::InitDependencies()
 			UEStruct ObjAsStruct = Obj.Cast<UEStruct>();
 
 			const int32 StructIdx = ObjAsStruct.GetIndex();
-			const int32 StructPackageIdx = ObjAsStruct.GetPackageIndex();
+			const int32 StructPackageIdx = CurrentPackageIdx;
 
 			DependencyListType& PackageDependencyList = bIsClass ? Info.PackageDependencies.ClassesDependencies : Info.PackageDependencies.StructsDependencies;
 			DependencyManager& ClassOrStructDependencyList = bIsClass ? Info.ClassesSorted : Info.StructsSorted;
@@ -287,9 +364,11 @@ void PackageManager::InitDependencies()
 				PackageManagerUtils::AddStructDependencies(ClassOrStructDependencyList, Dependencies, StructIdx, StructPackageIdx);
 
 			/* for both struct and class */
-			if (UEStruct Super = ObjAsStruct.GetSuper())
+			if (UEStruct Super = ObjAsStruct.GetSuper(); IsCurrentPackageObject(Super))
 			{
-				const int32 SuperPackageIdx = Super.GetPackageIndex();
+				const int32 SuperPackageIdx = GetCurrentPackageIndex(Super);
+				if (SuperPackageIdx < 0)
+					continue;
 
 				if (SuperPackageIdx == StructPackageIdx)
 				{
@@ -311,13 +390,18 @@ void PackageManager::InitDependencies()
 			/* Add class-functions to package */
 			for (UEFunction Func : ObjAsStruct.GetFunctions())
 			{
+				if (!IsCurrentPackageObject(Func))
+					continue;
+
 				Info.Functions.push_back(Func.GetIndex());
 
 				std::unordered_set<int32> ParamDependencies = PackageManagerUtils::GetDependencies(Func, Func.GetIndex());
 
 				BooleanOrEqual(Info.bHasParams, Func.HasMembers());
 
-				const int32 FuncPackageIndex = Func.GetPackageIndex();
+				const int32 FuncPackageIndex = GetCurrentPackageIndex(Func);
+				if (FuncPackageIndex < 0)
+					continue;
 
 				/* Add dependencies to ParamDependencies and add enums only to class dependencies (forwarddeclaration of enum classes defaults to int) */
 				PackageManagerUtils::SetPackageDependencies(Info.PackageDependencies.ParametersDependencies, ParamDependencies, FuncPackageIndex, true);
@@ -589,8 +673,11 @@ void PackageManager::Init()
 
 	PackageInfos.reserve(0x800);
 
+	Generator::ReportProgress("PackageManager::InitDependencies");
 	InitDependencies();
+	Generator::ReportProgress("PackageManager::InitNames");
 	InitNames();
+	Generator::ReportProgress("PackageManager::Init complete");
 }
 
 void PackageManager::PostInit()

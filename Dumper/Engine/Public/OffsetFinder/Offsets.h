@@ -29,9 +29,164 @@ struct FChunkedFixedUObjectArrayLayout
 	}
 };
 
+struct FExternalFFieldLayout
+{
+	int32 ClassOffset = -1;
+	int32 OwnerOffset = -1;
+	int32 NextOffset = -1;
+	int32 NameOffset = -1;
+	int32 FieldClassNameOffset = -1;
+
+	inline bool IsValid() const
+	{
+		return ClassOffset >= 0 && OwnerOffset >= 0 && NextOffset >= 0 &&
+			NameOffset >= 0 && FieldClassNameOffset >= 0;
+	}
+
+	inline bool IsCompactUE58Layout() const
+	{
+		return ClassOffset == 0x08 && OwnerOffset == 0x10 && NextOffset == 0x18 &&
+			NameOffset == 0x20 && FieldClassNameOffset == 0x08;
+	}
+};
+
+struct FExternalUFunctionLayout
+{
+	int32 ExecFunctionOffset = -1;
+
+	inline bool IsValid() const
+	{
+		return ExecFunctionOffset >= 0;
+	}
+};
+
+struct FExternalFPropertyLayout
+{
+	int32 ArrayDimOffset = -1;
+	int32 ElementSizeOffset = -1;
+	int32 PropertyFlagsOffset = -1;
+	int32 OffsetInternalOffset = -1;
+	int32 PropertySize = -1;
+	int32 BoolPropertyBase = -1;
+	int32 EnumPropertyBase = -1;
+	int32 ArrayInnerOffset = -1;
+	int32 StructPropertyStructOffset = -1;
+
+	inline bool IsValid() const
+	{
+		return ArrayDimOffset >= 0 && ElementSizeOffset >= 0 && PropertyFlagsOffset >= 0 &&
+			OffsetInternalOffset >= 0 && PropertySize >= 0 && BoolPropertyBase >= 0 &&
+			EnumPropertyBase >= 0 && ArrayInnerOffset >= 0 && StructPropertyStructOffset >= 0;
+	}
+};
+
+struct FExternalUStructLayout
+{
+	int32 ChildrenOffset = -1;
+	int32 UFieldNextOffset = -1;
+	int32 SuperStructOffset = -1;
+	int32 ChildPropertiesOffset = -1;
+	int32 SizeOffset = -1;
+	int32 MinAlignmentOffset = -1;
+
+	inline bool HasChildren() const { return ChildrenOffset >= 0; }
+	inline bool HasUFieldNext() const { return UFieldNextOffset >= 0; }
+	inline bool HasSuperStruct() const { return SuperStructOffset >= 0; }
+	inline bool HasChildProperties() const { return ChildPropertiesOffset >= 0; }
+	inline bool HasSize() const { return SizeOffset >= 0; }
+	inline bool HasMinAlignment() const { return MinAlignmentOffset >= 0; }
+
+	inline bool IsValid() const
+	{
+		return HasChildren() && HasUFieldNext() && HasSuperStruct() &&
+			HasChildProperties() && HasSize() && HasMinAlignment();
+	}
+};
+
+struct FExternalEngineLayout
+{
+	int32 LevelActorsOffset = -1;
+	int32 DataTableRowMapOffset = -1;
+	int32 ObjectClassIndex = -1;
+	int32 StructClassIndex = -1;
+
+	inline bool HasLevelActors() const
+	{
+		return LevelActorsOffset >= 0;
+	}
+
+	inline bool HasDataTableRowMap() const
+	{
+		return DataTableRowMapOffset >= 0;
+	}
+
+	inline bool HasCoreClassIndices() const
+	{
+		return ObjectClassIndex >= 0 && StructClassIndex >= 0;
+	}
+};
+
+struct FExternalPropertyValueSizes
+{
+	int32 DelegateProperty = -1;
+	int32 FieldPathProperty = -1;
+	int32 MulticastInlineDelegateProperty = -1;
+
+	inline bool HasDelegateProperty() const
+	{
+		return DelegateProperty >= static_cast<int32>(sizeof(void*));
+	}
+
+	inline bool HasFieldPathProperty() const
+	{
+		return FieldPathProperty >= static_cast<int32>(sizeof(void*));
+	}
+
+	inline bool HasMulticastInlineDelegateProperty() const
+	{
+		return MulticastInlineDelegateProperty >= static_cast<int32>(sizeof(void*));
+	}
+};
+
+struct FExternalFTextLayout
+{
+	int32 TextSize = -1;
+
+	inline bool IsValid() const
+	{
+		return TextSize >= static_cast<int32>(sizeof(void*)) && TextSize <= 0x100;
+	}
+};
+
+struct FExternalGeneratorSettings
+{
+	bool HasWeakObjectPtrWithoutTag = false;
+	bool WeakObjectPtrWithoutTag = false;
+	bool HasLargeWorldCoordinates = false;
+	bool LargeWorldCoordinates = false;
+	bool HasObjectPtrInsteadOfFieldPath = false;
+	bool ObjectPtrInsteadOfFieldPath = false;
+	bool HasUint8ArrayDim = false;
+	bool Uint8ArrayDim = false;
+
+	inline bool IsValid() const
+	{
+		return HasWeakObjectPtrWithoutTag && HasLargeWorldCoordinates &&
+			HasObjectPtrInsteadOfFieldPath && HasUint8ArrayDim;
+	}
+};
+
 namespace Off
 {
 	void Init();
+	inline FExternalFFieldLayout ExternalFFieldLayout;
+	inline FExternalUFunctionLayout ExternalUFunctionLayout;
+	inline FExternalFPropertyLayout ExternalFPropertyLayout;
+	inline FExternalUStructLayout ExternalUStructLayout;
+	inline FExternalEngineLayout ExternalEngineLayout;
+	inline FExternalPropertyValueSizes ExternalPropertyValueSizes;
+	inline FExternalFTextLayout ExternalFTextLayout;
+	inline FExternalGeneratorSettings ExternalGeneratorSettings;
 
 	//Offsets not to be used during generation but inside of the generated SDK
 	namespace InSDK

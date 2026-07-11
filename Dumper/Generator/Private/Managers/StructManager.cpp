@@ -1,5 +1,57 @@
 #include "Unreal/ObjectArray.h"
 #include "Managers/StructManager.h"
+#include "Generators/Generator.h"
+#include "OffsetFinder/Offsets.h"
+#include "Platform.h"
+
+namespace
+{
+	bool TryGetCurrentObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
+	{
+		OutCastFlags = EClassCastFlags::None;
+
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
+			return false;
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+		{
+			return false;
+		}
+
+		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
+	}
+
+	bool IsCurrentStructObject(UEStruct Struct)
+	{
+		EClassCastFlags CastFlags{};
+		if (!TryGetCurrentObjectCastFlags(Struct, CastFlags) || !(CastFlags & EClassCastFlags::Struct))
+			return false;
+
+		const auto* Address = static_cast<const uint8*>(Struct.GetAddress());
+		if (Platform::IsBadReadPtr(Address + Off::UStruct::Size) ||
+			Platform::IsBadReadPtr(Address + Off::UStruct::Size + sizeof(int32) - 1))
+		{
+			return false;
+		}
+
+		return true;
+	}
+}
 
 StructInfoHandle::StructInfoHandle(const StructInfo& InInfo)
 	: Info(&InInfo)
@@ -64,15 +116,38 @@ void StructManager::InitAlignmentsAndNames()
 	 */
 	std::vector<UEStruct> AllStructs;
 	AllStructs.reserve(10000);
-	
+	const int32 TotalObjects = ObjectArray::Num();
+	int32 ProcessedObjects = 0;
+
 	for (auto Obj : ObjectArray())
 	{
-		if (Obj.IsA(EClassCastFlags::Struct))
+		++ProcessedObjects;
+		if (ProcessedObjects == 1 || (ProcessedObjects % 0x1000) == 0 || ProcessedObjects == TotalObjects)
+		{
+			Generator::ReportProgress(
+				"Struct cache scan " + std::to_string(ProcessedObjects) + "/" + std::to_string(TotalObjects));
+		}
+
+		EClassCastFlags CastFlags{};
+		if (TryGetCurrentObjectCastFlags(Obj, CastFlags) && (CastFlags & EClassCastFlags::Struct))
 			AllStructs.push_back(Obj.Cast<UEStruct>());
 	}
 
+	Generator::ReportProgress("Struct alignment/name pass: " + std::to_string(AllStructs.size()) + " structs");
+	int32 ProcessedStructs = 0;
 	for (auto ObjAsStruct : AllStructs)
 	{
+		++ProcessedStructs;
+		if (!IsCurrentStructObject(ObjAsStruct))
+			continue;
+
+		if ((ProcessedStructs % 0x400) == 0 || ProcessedStructs == static_cast<int32>(AllStructs.size()))
+		{
+			Generator::ReportProgress(
+				"Struct alignment/name pass " + std::to_string(ProcessedStructs) + "/" +
+				std::to_string(AllStructs.size()));
+		}
+
 		// Add name to override info
 		StructInfo& NewOrExistingInfo = StructInfoOverrides[ObjAsStruct.GetIndex()];
 
@@ -124,8 +199,21 @@ void StructManager::InitAlignmentsAndNames()
 	}
 
 	// Second pass: Fix alignments based on super classes (reuse cached list)
+	Generator::ReportProgress("Struct super-alignment pass");
+	ProcessedStructs = 0;
 	for (auto ObjAsStruct : AllStructs)
 	{
+		++ProcessedStructs;
+		if (!IsCurrentStructObject(ObjAsStruct))
+			continue;
+
+		if ((ProcessedStructs % 0x400) == 0 || ProcessedStructs == static_cast<int32>(AllStructs.size()))
+		{
+			Generator::ReportProgress(
+				"Struct super-alignment pass " + std::to_string(ProcessedStructs) + "/" +
+				std::to_string(AllStructs.size()));
+		}
+
 		if (ObjAsStruct.IsA(EClassCastFlags::Function) || ObjAsStruct.HasType(InterfaceClass))
 			continue;
 
@@ -135,7 +223,9 @@ void StructManager::InitAlignmentsAndNames()
 		int32 NumElementsInStructStack = 0x0;
 
 		// Get a top to bottom list of a struct and all of its supers
-		for (UEStruct S = ObjAsStruct; S; S = S.GetSuper())
+		for (UEStruct S = ObjAsStruct;
+			IsCurrentStructObject(S) && NumElementsInStructStack < MaxNumSuperClasses;
+			S = S.GetSuper())
 		{
 			StructStack[NumElementsInStructStack] = S;
 			NumElementsInStructStack++;
@@ -145,7 +235,14 @@ void StructManager::InitAlignmentsAndNames()
 
 		for (int i = NumElementsInStructStack - 1; i >= 0; i--)
 		{
-			StructInfo& Info = StructInfoOverrides[StructStack[i].GetIndex()];
+			if (!IsCurrentStructObject(StructStack[i]))
+				continue;
+
+			auto It = StructInfoOverrides.find(StructStack[i].GetIndex());
+			if (It == StructInfoOverrides.end())
+				continue;
+
+			StructInfo& Info = It->second;
 
 			if (CurrentHighestAlignment < Info.Alignment)
 			{
@@ -166,10 +263,22 @@ void StructManager::InitSizesAndIsFinal()
 	const UEClass InterfaceClass = ObjectArray::FindClassFast("Interface");
 
 	// Reuse cached struct list from InitAlignmentsAndNames
+	const int32 TotalStructs = static_cast<int32>(StructInfoOverrides.size());
+	int32 ProcessedStructs = 0;
 	for (const auto& [Index, Info] : StructInfoOverrides)
 	{
+		++ProcessedStructs;
+		if (ProcessedStructs == 1 || (ProcessedStructs % 0x400) == 0 || ProcessedStructs == TotalStructs)
+		{
+			Generator::ReportProgress(
+				"Struct size/finality pass " + std::to_string(ProcessedStructs) + "/" +
+				std::to_string(TotalStructs));
+		}
+
 		UEStruct ObjAsStruct = ObjectArray::GetByIndex<UEStruct>(Index);
-		
+		if (!IsCurrentStructObject(ObjAsStruct))
+			continue;
+
 		if (ObjAsStruct.HasType(InterfaceClass))
 			continue;
 
@@ -181,7 +290,7 @@ void StructManager::InitSizesAndIsFinal()
 
 		UEStruct Super = ObjAsStruct.GetSuper();
 
-		if (NewOrExistingInfo.Size == 0x0 && Super != nullptr)
+		if (NewOrExistingInfo.Size == 0x0 && IsCurrentStructObject(Super))
 			NewOrExistingInfo.Size = Super.GetStructSize();
 
 		int32 LastMemberEnd = 0x0;
@@ -211,9 +320,13 @@ void StructManager::InitSizesAndIsFinal()
 		* 
 		* breaks out of the loop after encountering a super-struct which is not empty (aka. has member-variables)
 		*/
-		for (UEStruct S = Super; S; S = S.GetSuper())
+		for (UEStruct S = Super; IsCurrentStructObject(S); S = S.GetSuper())
 		{
-			auto It = StructInfoOverrides.find(S.GetIndex());
+			const int32 SuperIndex = S.GetIndex();
+			if (SuperIndex < 0)
+				break;
+
+			auto It = StructInfoOverrides.find(SuperIndex);
 
 			if (It == StructInfoOverrides.end())
 			{
@@ -252,17 +365,33 @@ void StructManager::Init()
 
 	StructInfoOverrides.reserve(0x2000);
 
+	Generator::ReportProgress("StructManager::InitAlignmentsAndNames");
 	InitAlignmentsAndNames();
+	Generator::ReportProgress("StructManager::InitSizesAndIsFinal");
 	InitSizesAndIsFinal();
 
 	/* 
 	* The default class-alignment of 0x8 is only set for classes with a valid Super-class, because they inherit from UObject. 
 	* UObject however doesn't have a super, so this needs to be set manually.
 	*/
-	const UEObject UObjectClass = ObjectArray::FindClassFast("Object");
-	StructInfoOverrides.find(UObjectClass.GetIndex())->second.Alignment = sizeof(void*);
+	const UEObject UObjectClass = Off::ExternalEngineLayout.ObjectClassIndex >= 0
+		? ObjectArray::GetByIndex(Off::ExternalEngineLayout.ObjectClassIndex)
+		: ObjectArray::FindClassFast("Object");
+	if (UObjectClass)
+	{
+		if (auto It = StructInfoOverrides.find(UObjectClass.GetIndex()); It != StructInfoOverrides.end())
+			It->second.Alignment = sizeof(void*);
+	}
 
 	/* I still hate whoever decided to call "UStruct" "Ustruct" on some UE versions. */
-	if (const UEObject UStructClass = ObjectArray::FindClassFast("struct"))
-		StructInfoOverrides.find(UStructClass.GetIndex())->second.Name = UniqueNameTable.FindOrAdd(std::string("UStruct"), false).first;
+	const UEObject UStructClass = Off::ExternalEngineLayout.StructClassIndex >= 0
+		? ObjectArray::GetByIndex(Off::ExternalEngineLayout.StructClassIndex)
+		: ObjectArray::FindClassFast("struct");
+	if (UStructClass)
+	{
+		if (auto It = StructInfoOverrides.find(UStructClass.GetIndex()); It != StructInfoOverrides.end())
+			It->second.Name = UniqueNameTable.FindOrAdd(std::string("UStruct"), false).first;
+	}
+
+	Generator::ReportProgress("StructManager::Init complete");
 }

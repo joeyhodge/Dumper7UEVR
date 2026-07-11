@@ -3,6 +3,7 @@
 #include "Unreal/UnrealObjects.h"
 #include "Unreal/ObjectArray.h"
 #include "OffsetFinder/Offsets.h"
+#include "Platform.h"
 
 
 void* UEFFieldClass::GetAddress()
@@ -12,7 +13,7 @@ void* UEFFieldClass::GetAddress()
 
 UEFFieldClass::operator bool() const
 {
-	return Class != nullptr;
+	return Class != nullptr && !Platform::IsBadReadPtr(Class);
 }
 
 EFieldClassID UEFFieldClass::GetId() const
@@ -22,6 +23,12 @@ EFieldClassID UEFFieldClass::GetId() const
 
 EClassCastFlags UEFFieldClass::GetCastFlags() const
 {
+	if (!Class || Platform::IsBadReadPtr(Class + Off::FFieldClass::CastFlags) ||
+		Platform::IsBadReadPtr(Class + Off::FFieldClass::CastFlags + sizeof(EClassCastFlags) - 1))
+	{
+		return EClassCastFlags::None;
+	}
+
 	return *reinterpret_cast<EClassCastFlags*>(Class + Off::FFieldClass::CastFlags);
 }
 
@@ -42,7 +49,7 @@ FName UEFFieldClass::GetFName() const
 
 bool UEFFieldClass::IsType(EClassCastFlags Flags) const
 {
-	return (Flags != EClassCastFlags::None ? (GetCastFlags() & Flags) : true);
+	return *this && (Flags != EClassCastFlags::None ? (GetCastFlags() & Flags) : true);
 }
 
 std::string UEFFieldClass::GetName() const
@@ -111,6 +118,12 @@ class UEObject UEFField::GetOwnerUObject() const
 
 UEFFieldClass UEFField::GetClass() const
 {
+	if (!Field || Platform::IsBadReadPtr(Field + Off::FField::Class) ||
+		Platform::IsBadReadPtr(Field + Off::FField::Class + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return UEFFieldClass(*reinterpret_cast<void**>(Field + Off::FField::Class));
 }
 
@@ -121,6 +134,12 @@ FName UEFField::GetFName() const
 
 UEFField UEFField::GetNext() const
 {
+	if (!Field || Platform::IsBadReadPtr(Field + Off::FField::Next) ||
+		Platform::IsBadReadPtr(Field + Off::FField::Next + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return UEFField(*reinterpret_cast<void**>(Field + Off::FField::Next));
 }
 
@@ -142,7 +161,11 @@ bool UEFField::IsOwnerUObject() const
 
 bool UEFField::IsA(EClassCastFlags Flags) const
 {
-	return (Flags != EClassCastFlags::None ? GetClass().IsType(Flags) : true);
+	if (!*this)
+		return false;
+
+	const UEFFieldClass Class = GetClass();
+	return Class && (Flags != EClassCastFlags::None ? Class.IsType(Flags) : true);
 }
 
 std::string UEFField::GetName() const
@@ -181,7 +204,13 @@ std::string UEFField::GetCppName() const
 
 UEFField::operator bool() const
 {
-	return Field != nullptr && reinterpret_cast<void*>(Field + Off::FField::Class) != nullptr;
+	if (!Field || Platform::IsBadReadPtr(Field + Off::FField::Class) ||
+		Platform::IsBadReadPtr(Field + Off::FField::Class + sizeof(void*) - 1))
+	{
+		return false;
+	}
+
+	return *reinterpret_cast<void**>(Field + Off::FField::Class) != nullptr;
 }
 
 bool UEFField::operator==(const UEFField& Other) const
@@ -213,16 +242,25 @@ void* UEObject::GetVft() const
 
 EObjectFlags UEObject::GetFlags() const
 {
+	if (!Object)
+		return EObjectFlags::NoFlags;
+
 	return *reinterpret_cast<EObjectFlags*>(Object + Off::UObject::Flags);
 }
 
 int32 UEObject::GetIndex() const
 {
+	if (!Object)
+		return -1;
+
 	return *reinterpret_cast<int32*>(Object + Off::UObject::Index);
 }
 
 UEClass UEObject::GetClass() const
 {
+	if (!Object)
+		return nullptr;
+
 	return UEClass(*reinterpret_cast<void**>(Object + Off::UObject::Class));
 }
 
@@ -233,6 +271,9 @@ FName UEObject::GetFName() const
 
 UEObject UEObject::GetOuter() const
 {
+	if (!Object)
+		return nullptr;
+
 	return UEObject(*reinterpret_cast<void**>(Object + Off::UObject::Outer));
 }
 
@@ -580,6 +621,12 @@ std::string UEEnum::GetEnumTypeAsStr() const
 
 UEStruct UEStruct::GetSuper() const
 {
+	if (!Object || Platform::IsBadReadPtr(Object + Off::UStruct::SuperStruct) ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::SuperStruct + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return UEStruct(*reinterpret_cast<void**>(Object + Off::UStruct::SuperStruct));
 }
 
@@ -595,11 +642,23 @@ UEFField UEStruct::GetChildProperties() const
 
 int16 UEStruct::GetMinAlignment() const
 {
+	if (!Object || Platform::IsBadReadPtr(Object + Off::UStruct::MinAlignment) ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::MinAlignment + sizeof(int16) - 1))
+	{
+		return 0x1;
+	}
+
 	return *reinterpret_cast<int16*>(Object + Off::UStruct::MinAlignment);
 }
 
 int32 UEStruct::GetStructSize() const
 {
+	if (!Object || Platform::IsBadReadPtr(Object + Off::UStruct::Size) ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::Size + sizeof(int32) - 1))
+	{
+		return 0x0;
+	}
+
 	return *reinterpret_cast<int32*>(Object + Off::UStruct::Size);
 }
 
@@ -608,7 +667,8 @@ bool UEStruct::HasType(UEStruct Type) const
 	if (Type == nullptr)
 		return false;
 
-	for (UEStruct S = *this; S; S = S.GetSuper())
+	int32 NumSupers = 0;
+	for (UEStruct S = *this; S && NumSupers < 0x100; S = S.GetSuper(), ++NumSupers)
 	{
 		if (S == Type)
 			return true;

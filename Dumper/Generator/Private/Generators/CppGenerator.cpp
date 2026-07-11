@@ -5,8 +5,43 @@
 #include "Generators/CppGenerator.h"
 #include "Wrappers/MemberWrappers.h"
 #include "Managers/MemberManager.h"
+#include "OffsetFinder/Offsets.h"
+#include "Platform.h"
 
 #include "Settings.h"
+
+namespace
+{
+	bool TryGetCurrentGeneratorObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
+	{
+		OutCastFlags = EClassCastFlags::None;
+
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
+			return false;
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+		{
+			return false;
+		}
+
+		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
+	}
+}
 
 constexpr std::string GetTypeFromSize(uint8 Size)
 {
@@ -546,6 +581,20 @@ std::string CppGenerator::GenerateFunctions(const StructWrapper& Struct, const M
 
 	for (const FunctionWrapper& Func : Members.IterateFunctions())
 	{
+		if (!Func.IsPredefined())
+		{
+			const UEFunction UnrealFunction = Func.GetUnrealFunction();
+			const int32 FunctionIndex = UnrealFunction.GetIndex();
+			if (FunctionIndex < 0 || !StructManager::GetStructInfos().contains(FunctionIndex))
+			{
+				Generator::ReportProgress(
+					"C++ SDK: skipping function without struct metadata owner=" +
+					std::to_string(Struct.GetUnrealStruct().GetIndex()) + " function=" +
+					std::to_string(FunctionIndex));
+				continue;
+			}
+		}
+
 		/* The function is no callable function, but instead just the signature of a TDelegate or TMulticastInlineDelegate */
 		if (Func.GetFunctionFlags() & EFunctionFlags::Delegate)
 			continue;
@@ -1189,10 +1238,25 @@ std::string CppGenerator::GetFunctionSignature(UEFunction Func)
 std::unordered_map<std::string, UEProperty> CppGenerator::GetUnknownProperties()
 {
 	std::unordered_map<std::string, UEProperty> PropertiesWithNames;
+	const StructManager::OverrideMapType& StructInfoMap = StructManager::GetStructInfos();
+	const int32 TotalStructs = static_cast<int32>(StructInfoMap.size());
+	int32 ProcessedStructs = 0;
 
-	for (UEObject Obj : ObjectArray())
+	// Reuse the validated metadata set instead of rescanning transient UObjects during generation.
+	for (const auto& [StructIndex, StructInfo] : StructInfoMap)
 	{
-		if (!Obj.IsA(EClassCastFlags::Struct))
+		(void)StructInfo;
+		++ProcessedStructs;
+		if (ProcessedStructs == 1 || (ProcessedStructs % 0x400) == 0 || ProcessedStructs == TotalStructs)
+		{
+			Generator::ReportProgress(
+				"Property fixup struct scan " + std::to_string(ProcessedStructs) + "/" +
+				std::to_string(TotalStructs));
+		}
+
+		UEObject Obj = ObjectArray::GetByIndex(StructIndex);
+		EClassCastFlags CastFlags{};
+		if (!TryGetCurrentGeneratorObjectCastFlags(Obj, CastFlags) || !(CastFlags & EClassCastFlags::Struct))
 			continue;
 
 		for (UEProperty Prop : Obj.Cast<UEStruct>().GetProperties())
@@ -1570,22 +1634,27 @@ void CppGenerator::WriteFileEnd(StreamType& File, EFileType Type)
 void CppGenerator::Generate()
 {
 	// Generate SDK.hpp with sorted packages
+	Generator::ReportProgress("C++ SDK: SDK.hpp");
 	StreamType SdkHpp(MainFolder / "SDK.hpp");
 	GenerateSDKHeader(SdkHpp);
 
 	// Generate PropertyFixup.hpp
+	Generator::ReportProgress("C++ SDK: PropertyFixup.hpp");
 	StreamType PropertyFixup(MainFolder / "PropertyFixup.hpp");
 	GeneratePropertyFixupFile(PropertyFixup);
 
 	// Generate NameCollisions.inl file containing forward declarations for classes in namespaces (potentially requires lock)
+	Generator::ReportProgress("C++ SDK: NameCollisions.inl");
 	StreamType NameCollisionsInl(MainFolder / "NameCollisions.inl");
 	GenerateNameCollisionsInl(NameCollisionsInl);
 
 	// Generate UnrealContainers.hpp
+	Generator::ReportProgress("C++ SDK: UnrealContainers.hpp");
 	StreamType UnrealContainers(MainFolder / "UnrealContainers.hpp");
 	GenerateUnrealContainers(UnrealContainers);
 
 	// Generate UtfN.hpp
+	Generator::ReportProgress("C++ SDK: UtfN.hpp");
 	StreamType UnicodeLib(MainFolder / "UtfN.hpp");
 	GenerateUnicodeLib(UnicodeLib);
 
@@ -1601,6 +1670,7 @@ void CppGenerator::Generate()
 	}
 
 	// Generate Basic.hpp and Basic.cpp files
+	Generator::ReportProgress("C++ SDK: Basic files");
 	StreamType BasicHpp(Subfolder / "Basic.hpp");
 	StreamType BasicCpp(Subfolder / "Basic.cpp");
 	GenerateBasicFiles(BasicHpp, BasicCpp, (Settings::Debug::bGenerateAssertionFile ? DebugAssertions : BasicHpp));
@@ -1611,6 +1681,8 @@ void CppGenerator::Generate()
 	{
 		if (Package.IsEmpty())
 			continue;
+
+		Generator::ReportProgress("C++ SDK package: " + Package.GetName());
 
 		const std::string FileName = Settings::CppGenerator::FilePrefix + Package.GetName();
 		const std::u8string U8FileName = reinterpret_cast<const std::u8string&>(FileName);
@@ -1676,6 +1748,9 @@ void CppGenerator::Generate()
 		*/
 		for (int32 EnumIdx : Package.GetEnums())
 		{
+			if (!EnumManager::GetEnumInfos().contains(EnumIdx))
+				continue;
+
 			GenerateEnum(ObjectArray::GetByIndex<UEEnum>(EnumIdx), StructsFile);
 		}
 
@@ -1687,7 +1762,19 @@ void CppGenerator::Generate()
 
 			DependencyManager::OnVisitCallbackType GenerateStructCallback = [&](int32 Index) -> void
 			{
-				GenerateStruct(ObjectArray::GetByIndex<UEStruct>(Index), StructsFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
+				if (!StructManager::GetStructInfos().contains(Index))
+					return;
+
+				try
+				{
+					GenerateStruct(ObjectArray::GetByIndex<UEStruct>(Index), StructsFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
+				}
+				catch (const std::exception& Exception)
+				{
+					throw std::runtime_error(
+						"C++ struct generation failed for package " + Package.GetName() +
+						" index " + std::to_string(Index) + ": " + Exception.what());
+				}
 			};
 
 			Structs.VisitAllNodesWithCallback(GenerateStructCallback);
@@ -1701,7 +1788,19 @@ void CppGenerator::Generate()
 
 			DependencyManager::OnVisitCallbackType GenerateClassCallback = [&](int32 Index) -> void
 			{
-				GenerateStruct(ObjectArray::GetByIndex<UEStruct>(Index), ClassesFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
+				if (!StructManager::GetStructInfos().contains(Index))
+					return;
+
+				try
+				{
+					GenerateStruct(ObjectArray::GetByIndex<UEStruct>(Index), ClassesFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
+				}
+				catch (const std::exception& Exception)
+				{
+					throw std::runtime_error(
+						"C++ class generation failed for package " + Package.GetName() +
+						" index " + std::to_string(Index) + ": " + Exception.what());
+				}
 			};
 
 			Classes.VisitAllNodesWithCallback(GenerateClassCallback);
@@ -1726,6 +1825,8 @@ void CppGenerator::Generate()
 	{
 		WriteFileEnd(DebugAssertions, EFileType::DebugAssertions);
 	}
+
+	Generator::ReportProgress("C++ SDK: packages complete");
 }
 
 void CppGenerator::InitPredefinedMembers()

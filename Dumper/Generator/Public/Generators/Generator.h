@@ -74,21 +74,32 @@ public:
         if (!bDumpedGObjects)
         {
             bDumpedGObjects = true;
+			ReportProgress("Generator: GObjects dump");
             ObjectArray::DumpObjects(DumperFolder);
 
             if (Settings::Internal::bUseFProperty)
+			{
+				ReportProgress("Generator: GObjects property dump");
                 ObjectArray::DumpObjectsWithProperties(DumperFolder);
+			}
+
+			ReportProgress("Generator: GObjects dumps complete");
         }
 
+		ReportProgress("Generator: output folders");
         if (!SetupFolders(GeneratorType::MainFolderName, GeneratorType::MainFolder, GeneratorType::SubfolderName, GeneratorType::Subfolder))
             return false;
 
+		ReportProgress("Generator: predefined members");
         GeneratorType::InitPredefinedMembers();
+		ReportProgress("Generator: predefined functions");
         GeneratorType::InitPredefinedFunctions();
 
         MemberManager::SetPredefinedMemberLookupPtr(&GeneratorType::PredefinedMembers);
 
+		ReportProgress("Generator: implementation");
         GeneratorType::Generate();
+		ReportProgress("Generator: implementation complete");
         return true;
     };
 };

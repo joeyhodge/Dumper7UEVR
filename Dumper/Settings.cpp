@@ -6,9 +6,17 @@
 
 #include "Unreal/UnrealObjects.h"
 #include "Unreal/ObjectArray.h"
+#include "OffsetFinder/Offsets.h"
 
 void Settings::InitWeakObjectPtrSettings()
 {
+	if (Off::ExternalGeneratorSettings.HasWeakObjectPtrWithoutTag)
+	{
+		Settings::Internal::bIsWeakObjectPtrWithoutTag =
+			Off::ExternalGeneratorSettings.WeakObjectPtrWithoutTag;
+		return;
+	}
+
 	const UEStruct LoadAsset = ObjectArray::FindObjectFast<UEFunction>("LoadAsset", EClassCastFlags::Function);
 
 	if (!LoadAsset)
@@ -37,6 +45,13 @@ void Settings::InitWeakObjectPtrSettings()
 
 void Settings::InitLargeWorldCoordinateSettings()
 {
+	if (Off::ExternalGeneratorSettings.HasLargeWorldCoordinates)
+	{
+		Settings::Internal::bUseLargeWorldCoordinates =
+			Off::ExternalGeneratorSettings.LargeWorldCoordinates;
+		return;
+	}
+
 	const UEStruct FVectorStruct = ObjectArray::FindStructFast("Vector");
 
 	if (!FVectorStruct) [[unlikely]]
@@ -61,6 +76,13 @@ void Settings::InitLargeWorldCoordinateSettings()
 
 void Settings::InitObjectPtrPropertySettings()
 {
+	if (Off::ExternalGeneratorSettings.HasObjectPtrInsteadOfFieldPath)
+	{
+		Settings::Internal::bIsObjPtrInsteadOfFieldPathProperty =
+			Off::ExternalGeneratorSettings.ObjectPtrInsteadOfFieldPath;
+		return;
+	}
+
 	const UEClass ObjectPtrPropertyClass = ObjectArray::FindClassFast("ObjectPtrProperty");
 
 	if (!ObjectPtrPropertyClass)
@@ -78,6 +100,12 @@ void Settings::InitObjectPtrPropertySettings()
 
 void Settings::InitArrayDimSizeSettings()
 {
+	if (Off::ExternalGeneratorSettings.HasUint8ArrayDim)
+	{
+		Settings::Internal::bUseUint8ArrayDim = Off::ExternalGeneratorSettings.Uint8ArrayDim;
+		return;
+	}
+
 	/*
 	 * UEProperty::GetArrayDim() is already fully functional at this point.
 	 *
@@ -114,7 +142,7 @@ void Settings::Config::Load()
 	const std::string LocalPath = (fs::current_path() / "Dumper-7.ini").string();
 	const char* ConfigPath = nullptr;
 
-	if (fs::exists(LocalPath)) 
+	if (fs::exists(LocalPath))
 	{
 		ConfigPath = LocalPath.c_str();
 	}
@@ -124,7 +152,7 @@ void Settings::Config::Load()
 	}
 
 	// If no config found, use defaults
-	if (!ConfigPath) 
+	if (!ConfigPath)
 		return;
 
 	char SDKNamespace[256] = {};

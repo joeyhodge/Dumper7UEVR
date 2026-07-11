@@ -112,6 +112,7 @@ public:
 public:
     // C++ wrapper structs for the C structs
     struct UObject;
+    struct UField;
     struct UEngine;
     struct UGameEngine;
     struct UWorld;
@@ -414,6 +415,11 @@ public:
             return (FField*)fn(to_handle());
         }
 
+        UField* get_children() const {
+            static const auto fn = initialize()->get_children;
+            return fn != nullptr ? (UField*)fn(to_handle()) : nullptr;
+        }
+
         int32_t get_properties_size() const {
             static const auto fn = initialize()->get_properties_size;
             return fn(to_handle());
@@ -429,6 +435,26 @@ public:
         inline static const UEVR_UStructFunctions* initialize() {
             if (s_functions == nullptr) {
                 s_functions = API::get()->sdk()->ustruct;
+            }
+
+            return s_functions;
+        }
+    };
+
+    struct UField : public UObject {
+        inline UEVR_UFieldHandle to_handle() { return (UEVR_UFieldHandle)this; }
+        inline UEVR_UFieldHandle to_handle() const { return (UEVR_UFieldHandle)this; }
+
+        UField* get_next() const {
+            static const auto fn = initialize()->get_next;
+            return fn != nullptr ? (UField*)fn(to_handle()) : nullptr;
+        }
+
+    private:
+        static inline const UEVR_UFieldFunctions* s_functions{nullptr};
+        inline static const UEVR_UFieldFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->ufield;
             }
 
             return s_functions;

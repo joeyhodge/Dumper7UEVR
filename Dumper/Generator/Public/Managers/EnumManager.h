@@ -143,7 +143,12 @@ public:
 		if (!Enum)
 			return {};
 
-		return EnumInfoOverrides.at(Enum.GetIndex());
+		const int32 Index = Enum.GetIndex();
+		const auto It = EnumInfoOverrides.find(Index);
+		if (It == EnumInfoOverrides.end())
+			throw std::out_of_range("missing EnumInfo for object index " + std::to_string(Index));
+
+		return It->second;
 	}
 };
 

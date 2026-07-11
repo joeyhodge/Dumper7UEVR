@@ -1,4 +1,31 @@
 #include "Managers/EnumManager.h"
+#include "Generators/Generator.h"
+#include "OffsetFinder/Offsets.h"
+#include "Platform.h"
+
+namespace
+{
+	bool IsCurrentEnumObject(UEObject Object)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		void* Class = *reinterpret_cast<void* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr || Platform::IsBadReadPtr(Class))
+			return false;
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		return Index >= 0 && Index < ObjectArray::Num() &&
+			ObjectArray::GetByIndex(Index).GetAddress() == Object.GetAddress();
+	}
+}
 
 namespace EnumInitHelper
 {
@@ -77,8 +104,20 @@ CollisionInfoIterator EnumInfoHandle::GetMemberCollisionInfoIterator() const
 
 void EnumManager::InitInternal()
 {
+	const int32 TotalObjects = ObjectArray::Num();
+	int32 ProcessedObjects = 0;
 	for (auto Obj : ObjectArray())
 	{
+		++ProcessedObjects;
+		if (ProcessedObjects == 1 || (ProcessedObjects % 0x1000) == 0 || ProcessedObjects == TotalObjects)
+		{
+			Generator::ReportProgress(
+				"Enum scan " + std::to_string(ProcessedObjects) + "/" + std::to_string(TotalObjects));
+		}
+
+		if (!IsCurrentEnumObject(Obj))
+			continue;
+
 		if (Obj.HasAnyFlags(EObjectFlags::ClassDefaultObject))
 			continue;
 
@@ -108,7 +147,7 @@ void EnumManager::InitInternal()
 					UnderlayingProperty = Property;
 				}
 
-				if (!Enum)
+				if (!IsCurrentEnumObject(Enum))
 					continue;
 
 				EnumInfo& Info = EnumInfoOverrides[Enum.GetIndex()];
@@ -233,6 +272,9 @@ void EnumManager::Init()
 
 	EnumInfoOverrides.reserve(0x1000);
 
+	Generator::ReportProgress("EnumManager::InitIllegalNames");
 	InitIllegalNames(); // call this first
+	Generator::ReportProgress("EnumManager::InitInternal");
 	InitInternal();
+	Generator::ReportProgress("EnumManager::Init complete");
 }

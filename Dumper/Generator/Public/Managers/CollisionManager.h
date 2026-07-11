@@ -144,10 +144,21 @@ public:
 	template<typename UEType>
 	inline NameInfo GetNameCollisionInfoUnchecked(UEStruct Struct, UEType Member)
 	{
-		CollisionManager::NameContainer& InfosForStruct = NameInfos.at(Struct.GetIndex());
-		uint64 NameInfoIndex = TranslationMap[KeyFunctions::GetKeyForCollisionInfo(Struct, Member)];
+		const uint64 Key = KeyFunctions::GetKeyForCollisionInfo(Struct, Member);
+		const auto StructIt = NameInfos.find(Struct.GetIndex());
+		const auto TranslationIt = TranslationMap.find(Key);
 
-		return InfosForStruct.at(NameInfoIndex);
+		if (StructIt != NameInfos.end() && TranslationIt != TranslationMap.end() &&
+			TranslationIt->second < StructIt->second.size())
+		{
+			return StructIt->second[TranslationIt->second];
+		}
+
+		const auto [NameIndex, _] = MemberNames.FindOrAdd(Member.GetValidName());
+		constexpr ECollisionType FallbackType = std::is_same_v<UEType, UEFunction>
+			? ECollisionType::FunctionName
+			: ECollisionType::MemberName;
+		return NameInfo(NameIndex, FallbackType);
 	}
 
 private:

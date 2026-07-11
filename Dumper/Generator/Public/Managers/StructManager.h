@@ -131,7 +131,12 @@ public:
 		if (!Struct)
 			return {};
 
-		return StructInfoOverrides.at(Struct.GetIndex());
+		const int32 Index = Struct.GetIndex();
+		const auto It = StructInfoOverrides.find(Index);
+		if (It == StructInfoOverrides.end())
+			throw std::out_of_range("missing StructInfo for object index " + std::to_string(Index));
+
+		return It->second;
 	}
 
 	static inline bool IsStructCyclicWithPackage(int32 StructIndex, int32 PackageIndex)

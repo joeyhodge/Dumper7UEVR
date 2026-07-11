@@ -1,7 +1,52 @@
 #include <algorithm>
 
 #include "Managers/MemberManager.h"
+#include "Generators/Generator.h"
+#include "OffsetFinder/Offsets.h"
+#include "Platform.h"
 #include "Wrappers/MemberWrappers.h"
+
+namespace
+{
+	bool IsCurrentMemberObject(UEObject Object)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		void* Class = *reinterpret_cast<void* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr || Platform::IsBadReadPtr(Class))
+			return false;
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		return Index >= 0 && Index < ObjectArray::Num() &&
+			ObjectArray::GetByIndex(Index).GetAddress() == Object.GetAddress();
+	}
+
+	UEStruct FindCurrentStructByName(const std::string& Name)
+	{
+		for (UEObject Object : ObjectArray())
+		{
+			if (!IsCurrentMemberObject(Object) ||
+				!Object.IsA(EClassCastFlags::Struct) ||
+				Object.IsA(EClassCastFlags::Function))
+			{
+				continue;
+			}
+
+			if (Object.GetName() == Name)
+				return Object.Cast<UEStruct>();
+		}
+
+		return nullptr;
+	}
+}
 
 MemberManager::MemberManager(UEStruct Str)
 	: Struct(std::make_shared<StructWrapper>(Str))
@@ -196,7 +241,9 @@ void MemberManager::InitReservedNames()
 
 void MemberManager::FixIncorrectNames()
 {
-	const UEStruct RotatorStruct = ObjectArray::FindStructFast("Rotator");
+	const UEStruct RotatorStruct = FindCurrentStructByName("Rotator");
+	if (!RotatorStruct)
+		return;
 
 	// Search for properties with incorrect casing, if "pitch" is found correct it to "Pitch"
 	if (const UEProperty PitchProperty = RotatorStruct.FindMember("pitch"))
@@ -207,4 +254,46 @@ void MemberManager::FixIncorrectNames()
 
 	if (const UEProperty PitchProperty = RotatorStruct.FindMember("roll"))
 		StructManager_NameAccessHelper::ReplaceName(MemberNames, RotatorStruct, PitchProperty, "Roll");
+}
+
+void MemberManager::Init()
+{
+	static bool bInitialized = false;
+
+	if (bInitialized)
+		return;
+
+	bInitialized = true;
+
+	Generator::ReportProgress("MemberManager::InitReservedNames");
+	InitReservedNames();
+
+	const int32 TotalObjects = ObjectArray::Num();
+	int32 ProcessedObjects = 0;
+	int32 AcceptedStructs = 0;
+
+	for (UEObject Object : ObjectArray())
+	{
+		++ProcessedObjects;
+		if (ProcessedObjects == 1 || (ProcessedObjects % 0x1000) == 0 || ProcessedObjects == TotalObjects)
+		{
+			Generator::ReportProgress(
+				"Member scan " + std::to_string(ProcessedObjects) + "/" + std::to_string(TotalObjects));
+		}
+
+		if (!IsCurrentMemberObject(Object) ||
+			!Object.IsA(EClassCastFlags::Struct) ||
+			Object.IsA(EClassCastFlags::Function))
+		{
+			continue;
+		}
+
+		AddStructToNameContainer(Object.Cast<UEStruct>());
+		++AcceptedStructs;
+	}
+
+	Generator::ReportProgress("Member scan complete: " + std::to_string(AcceptedStructs) + " structs");
+	Generator::ReportProgress("MemberManager::FixIncorrectNames");
+	FixIncorrectNames();
+	Generator::ReportProgress("MemberManager::Init complete");
 }

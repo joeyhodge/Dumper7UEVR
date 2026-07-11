@@ -1,4 +1,6 @@
 #include "Generators/DumpspaceGenerator.h"
+#include "Generators/Generator.h"
+#include "Managers/EnumManager.h"
 
 std::string DumpspaceGenerator::GetStructPrefixedName(const StructWrapper& Struct)
 {
@@ -413,7 +415,23 @@ DSGen::ClassHolder DumpspaceGenerator::GenerateStruct(const StructWrapper& Struc
 		return StructOrClass;
 
 	for (const FunctionWrapper& Wrapper : Members.IterateFunctions())
+	{
+		if (!Wrapper.IsPredefined())
+		{
+			const UEFunction Function = Wrapper.GetUnrealFunction();
+			const int32 FunctionIndex = Function.GetIndex();
+			if (FunctionIndex < 0 || !StructManager::GetStructInfos().contains(FunctionIndex))
+			{
+				Generator::ReportProgress(
+					"Dumpspace: skipping function without struct metadata owner=" +
+					std::to_string(Struct.GetUnrealStruct().GetIndex()) + " function=" +
+					std::to_string(FunctionIndex));
+				continue;
+			}
+		}
+
 		StructOrClass.functions.push_back(GenearateFunction(Wrapper));
+	}
 
 	return StructOrClass;
 }
@@ -494,12 +512,18 @@ void DumpspaceGenerator::Generate()
 		*/
 		for (int32 EnumIdx : Package.GetEnums())
 		{
+			if (!EnumManager::GetEnumInfos().contains(EnumIdx))
+				continue;
+
 			DSGen::EnumHolder Enum = GenerateEnum(ObjectArray::GetByIndex<UEEnum>(EnumIdx));
 			DSGen::bakeEnum(Enum);
 		}
 
 		DependencyManager::OnVisitCallbackType GenerateClassOrStructCallback = [&](int32 Index) -> void
 		{
+			if (!StructManager::GetStructInfos().contains(Index))
+				return;
+
 			DSGen::ClassHolder StructOrClass = GenerateStruct(ObjectArray::GetByIndex<UEStruct>(Index));
 			DSGen::bakeStructOrClass(StructOrClass);
 		};

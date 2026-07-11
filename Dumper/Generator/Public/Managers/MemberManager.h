@@ -224,29 +224,7 @@ public:
 	/* Fixes the casing of FRotator members. pitch -> Pitch, yaw -> Yaw, roll -> Roll */
 	static void FixIncorrectNames();
 
-	static inline void Init()
-	{
-		static bool bInitialized = false;
-
-		if (bInitialized)
-			return;
-
-		bInitialized = true;
-
-		/* Adds special names first, to avoid name-collisions with predefined members */
-		InitReservedNames();
-
-		/* Initialize member-name collisions  */
-		for (auto Obj : ObjectArray())
-		{
-			if (!Obj.IsA(EClassCastFlags::Struct) || Obj.IsA(EClassCastFlags::Function))
-				continue;
-
-			AddStructToNameContainer(Obj.Cast<UEStruct>());
-		}
-
-		FixIncorrectNames();
-	}
+	static void Init();
 
 	static inline void AddStructToNameContainer(UEStruct Struct)
 	{

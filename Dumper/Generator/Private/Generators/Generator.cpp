@@ -16,10 +16,14 @@ std::string Generator::SDKFolder{};
 
 inline void InitSettings()
 {
+	Generator::ReportProgress("Generator settings: weak object pointer");
 	Settings::InitWeakObjectPtrSettings();
+	Generator::ReportProgress("Generator settings: large world coordinates");
 	Settings::InitLargeWorldCoordinateSettings();
 
+	Generator::ReportProgress("Generator settings: object pointer property");
 	Settings::InitObjectPtrPropertySettings();
+	Generator::ReportProgress("Generator settings: array dimension");
 	Settings::InitArrayDimSizeSettings();
 }
 

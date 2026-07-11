@@ -27,7 +27,11 @@ size_t DependencyManager::GetNumEntries() const
 
 void DependencyManager::VisitIndexAndDependencies(int32 Index, OnVisitCallbackType Callback) const
 {
-	auto& [IterationHitCounter, Dependencies] = AllDependencies.at(Index);
+	const auto It = AllDependencies.find(Index);
+	if (It == AllDependencies.end())
+		return;
+
+	auto& [IterationHitCounter, Dependencies] = It->second;
 
 	if (IterationHitCounter >= CurrentIterationHitCount)
 		return;
