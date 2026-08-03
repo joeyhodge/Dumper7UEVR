@@ -911,9 +911,11 @@ bool capture_uevr_object_snapshot()
 			VectorComponentSize == static_cast<int32>(sizeof(double));
 	}
 
-	// Official UE5.8 keeps FieldPathProperty and ObjectPtrProperty distinct.
-	// Avoid the old worker-thread FFieldClass name probe for this confirmed layout.
-	if (Off::ExternalFFieldLayout.IsCompactUE58Layout())
+	// Standard FField-based engines keep FieldPathProperty and ObjectPtrProperty
+	// distinct. When UEVR has already supplied a validated FField layout, avoid
+	// rescanning its UObject snapshot for the legacy UClass-based probe: modern
+	// property descriptors are FFields, and stale class entries can fault there.
+	if (Off::ExternalFFieldLayout.IsValid())
 	{
 		Off::ExternalGeneratorSettings.HasObjectPtrInsteadOfFieldPath = true;
 		Off::ExternalGeneratorSettings.ObjectPtrInsteadOfFieldPath = false;

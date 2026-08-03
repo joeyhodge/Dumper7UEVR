@@ -798,14 +798,35 @@ void IDAMappingGenerator::GenerateClassFunctions(std::stringstream& ExecFuncData
 {
 	static std::unordered_map<uint32, std::string> Funcs;
 
+	const int32 ClassIndex = Class.GetIndex();
+	if (ClassIndex < 0 || !StructManager::GetStructInfos().contains(ClassIndex))
+	{
+		Generator::ReportProgress(
+			"IDA mappings: skipping class without struct metadata index=" +
+			std::to_string(ClassIndex));
+		return;
+	}
+
 	StructWrapper WrappedClass(Class);
 	MemberManager Members = WrappedClass.GetMembers();
 	for (const FunctionWrapper WrappedFunc : Members.IterateFunctions())
 	{
-		if (!WrappedFunc.HasFunctionFlag(EFunctionFlags::Native) || WrappedFunc.IsPredefined())
+		if (WrappedFunc.IsPredefined())
 			continue;
 
 		const UEFunction Func = WrappedFunc.GetUnrealFunction();
+		const int32 FunctionIndex = Func.GetIndex();
+		if (FunctionIndex < 0 || !StructManager::GetStructInfos().contains(FunctionIndex))
+		{
+			Generator::ReportProgress(
+				"IDA mappings: skipping function without struct metadata owner=" +
+				std::to_string(ClassIndex) + " function=" +
+				std::to_string(FunctionIndex));
+			continue;
+		}
+
+		if (!WrappedFunc.HasFunctionFlag(EFunctionFlags::Native))
+			continue;
 
 		const std::string MangledName = MangleUFunctionName(Class.GetCppName(), Func.GetValidName());
 		const uint32 Offset = static_cast<uint32>(Platform::GetOffset(Func.GetExecFunction()));
@@ -948,6 +969,9 @@ void IDAMappingGenerator::Generate()
 		{
 			for (int32 EnumIdx : Package.GetEnums())
 			{
+				if (!EnumManager::GetEnumInfos().contains(EnumIdx))
+					continue;
+
 				GenerateSingleEnum(ObjectArray::GetByIndex<UEEnum>(EnumIdx), EnumData, NameData);
 				NumEnums++;
 			}
@@ -959,6 +983,14 @@ void IDAMappingGenerator::Generate()
 
 			Structs.VisitAllNodesWithCallback([&](int32 Index) -> void
 			{
+				if (!StructManager::GetStructInfos().contains(Index))
+				{
+					Generator::ReportProgress(
+						"IDA mappings: skipping struct without metadata index=" +
+						std::to_string(Index));
+					return;
+				}
+
 				GenerateSingleStruct(ObjectArray::GetByIndex<UEStruct>(Index), StructData, NameData);
 				NumStructs++;
 			});
@@ -970,6 +1002,14 @@ void IDAMappingGenerator::Generate()
 
 			Classes.VisitAllNodesWithCallback([&](int32 Index) -> void
 			{
+				if (!StructManager::GetStructInfos().contains(Index))
+				{
+					Generator::ReportProgress(
+						"IDA mappings: skipping class without metadata index=" +
+						std::to_string(Index));
+					return;
+				}
+
 				GenerateSingleStruct(ObjectArray::GetByIndex<UEStruct>(Index), StructData, NameData);
 				NumStructs++;
 			});
