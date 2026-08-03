@@ -29,6 +29,7 @@
 #include "Generators/MappingGenerator.h"
 
 #include "OffsetFinder/Offsets.h"
+#include "Unreal/UnrealTypes.h"
 
 #include "uevr/Plugin.hpp"
 
@@ -270,6 +271,24 @@ bool is_readable_uevr_range(const void* address, size_t size)
 	const uintptr_t end = start + size;
 	const uintptr_t region_end = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
 	return end >= start && end <= region_end;
+}
+
+std::wstring uevr_fname_to_string(const void* name)
+{
+	if (!is_readable_uevr_range(name, sizeof(API::FName)))
+		return L"None";
+
+	try
+	{
+		std::wstring result = reinterpret_cast<const API::FName*>(name)->to_string();
+		while (!result.empty() && result.back() == L'\0')
+			result.pop_back();
+		return result.empty() ? L"None" : result;
+	}
+	catch (...)
+	{
+		return L"None";
+	}
 }
 
 bool try_uevr_is_a(API::UObject* object, API::UClass* type)
@@ -1130,6 +1149,7 @@ DWORD MainThreadImpl(HMODULE module)
 
     try
     {
+		FName::SetExternalToStringCallback(uevr_fname_to_string);
         Settings::Config::Load();
 
 		if (!Generator::PrepareOutputFolder())
@@ -1181,7 +1201,7 @@ DWORD MainThreadImpl(HMODULE module)
 		if (!Generator::InitEngineCore())
 		{
 			const auto& error = ObjectArray::GetInitializationError();
-			const std::string message = "Dumper-7 failed to initialize the UE object array" + (error.empty() ? std::string{} : ": " + error);
+			const std::string message = "Dumper-7 failed to initialize engine core" + (error.empty() ? std::string{} : ": " + error);
 			append_status_line(message);
 			API::get()->log_error("dump.dll: %s", message.c_str());
 			return 1;

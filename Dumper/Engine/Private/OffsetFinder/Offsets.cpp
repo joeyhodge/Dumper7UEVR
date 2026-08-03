@@ -430,6 +430,7 @@ void Off::Init()
 				static_cast<int32>(alignof(uint64)));
 			Off::FFieldClass::CastFlags = Off::FFieldClass::Id + static_cast<int32>(sizeof(uint64));
 			Off::FFieldClass::SuperClass = Off::FFieldClass::CastFlags + static_cast<int32>(sizeof(EClassCastFlags));
+			Off::FField::EditorOnlyMetadata = OffsetFinder::OffsetNotFound;
 		}
 		else
 		{
@@ -457,6 +458,9 @@ void Off::Init()
 				Off::FField::Name = OffsetFinder::NewFindFFieldNameOffset();
 
 			Off::FField::Flags = Off::FField::Name + Off::InSDK::Name::FNameSize;
+
+			ReportOffsetStage("FField editor-only metadata");
+			Off::FField::EditorOnlyMetadata = OffsetFinder::FindFFieldEditorOnlyMetaDataOffset();
 		}
 
 		std::cerr << std::format("Off::FField::Class: 0x{:X}\n", Off::FField::Class);
@@ -465,7 +469,14 @@ void Off::Init()
 		std::cerr << std::format("Off::FField::Flags: 0x{:X}\n", Off::FField::Flags);
 		std::cerr << std::format("Off::FFieldClass::Name: 0x{:X}\n", Off::FFieldClass::Name);
 		std::cerr << std::format("Off::FFieldClass::CastFlags: 0x{:X}\n", Off::FFieldClass::CastFlags);
+		if (Off::FField::EditorOnlyMetadata != OffsetFinder::OffsetNotFound)
+			std::cerr << std::format("Off::FField::EditorOnlyMetadata: 0x{:X}\n", Off::FField::EditorOnlyMetadata);
 	}
+
+	ReportOffsetStage("UStruct base chain");
+	Off::UStruct::StructBaseChain = OffsetFinder::FindStructBaseChainOffset();
+	if (Off::UStruct::StructBaseChain != OffsetFinder::OffsetNotFound)
+		std::cerr << std::format("Off::UStruct::StructBaseChain: 0x{:X}\n", Off::UStruct::StructBaseChain);
 
 	ReportOffsetStage("UClass default object");
 	Off::UClass::ClassDefaultObject = OffsetFinder::FindDefaultObjectOffset();
@@ -478,6 +489,11 @@ void Off::Init()
 	ReportOffsetStage("UEnum names");
 	Off::UEnum::Names = OffsetFinder::FindEnumNamesOffset();
 	std::cerr << std::format("Off::UEnum::Names: 0x{:X}\n", Off::UEnum::Names) << std::endl;
+
+	ReportOffsetStage("UEnum underlying type");
+	Off::UEnum::UnderlyingType = OffsetFinder::FindEnumUnderlayingTypeOffset();
+	if (Settings::Internal::bHasUnderlayingTypeInUEnum)
+		std::cerr << std::format("Off::UEnum::UnderlyingType: 0x{:X}\n", Off::UEnum::UnderlyingType) << std::endl;
 
 	ReportOffsetStage("UFunction flags");
 	Off::UFunction::FunctionFlags = OffsetFinder::FindFunctionFlagsOffset();
@@ -617,6 +633,9 @@ void Off::Init()
 	Off::OptionalProperty::ValueProperty = Off::InSDK::Properties::PropertySize;
 
 	Off::ClassProperty::MetaClass = Off::ObjectProperty::PropertyClass + sizeof(void*); //0x8 inheritance from ObjectProperty
+
+	Off::FInstancedStruct::ScriptStruct = 0x00;
+	Off::FInstancedStruct::StructMemory = Off::FInstancedStruct::ScriptStruct + sizeof(void*);
 }
 
 void PropertySizes::Init()

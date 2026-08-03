@@ -66,6 +66,16 @@ FName::FName(const void* Ptr)
 {
 }
 
+void FName::SetExternalToStringCallback(ExternalToStringCallback Callback)
+{
+	ExternalToString = Callback;
+}
+
+bool FName::IsInitialized()
+{
+	return ToStr != nullptr;
+}
+
 void FName::Init_Windows(bool bForceGNames)
 {
 #ifdef PLATFORM_WINDOWS
@@ -178,6 +188,19 @@ void FName::Init_Windows(bool bForceGNames)
 			NameArray::SetGNamesWithoutCommitting();
 			FName::InitFallback();
 		}
+	}
+
+	if (!ToStr && !AppendString)
+	{
+		if (ExternalToString)
+		{
+			ToStr = ExternalToString;
+			std::cerr << "Using externally supplied FName conversion callback\n\n";
+			return;
+		}
+
+		std::cerr << "Couldn't initialize FName conversion\n\n";
+		return;
 	}
 
 	std::cerr << std::format("Found FName::{} at Offset 0x{:X}\n\n", (Off::InSDK::Name::bIsUsingAppendStringOverToString ? "AppendString" : "ToString"), Off::InSDK::Name::AppendNameToString);
@@ -295,6 +318,11 @@ void FName::InitFallback()
 	Off::InSDK::Name::bIsUsingAppendStringOverToString = false;
 
 	void* Conv_NameToStringAddress = FindUnrealExecFunctionByString("Conv_NameToString");
+	if (Conv_NameToStringAddress == nullptr)
+	{
+		Off::InSDK::Name::AppendNameToString = 0x0;
+		return;
+	}
 
 	constexpr std::array<const char*, 3> PossibleSigs =
 	{
@@ -318,6 +346,8 @@ void FName::InitFallback()
 std::wstring FName::ToRawWString() const
 {
 	if (!Address)
+		return L"None";
+	if (!ToStr)
 		return L"None";
 
 	return ToStr(Address);

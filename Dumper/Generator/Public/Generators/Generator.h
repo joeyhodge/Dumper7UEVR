@@ -12,6 +12,10 @@
 
 namespace fs = std::filesystem;
 
+void DumpEditorOnlyMetadata(const fs::path& DumperFolder);
+
+void DumpEditorOnlyMetadata(const fs::path& DumperFolder);
+
 template<typename GeneratorType>
 concept GeneratorImplementation = requires(GeneratorType t)
 {
@@ -50,6 +54,7 @@ private:
     static inline fs::path DumperFolder;
     static inline bool bDumpedGObjects = false;
     static inline ProgressCallback ProgressReporter{};
+	static inline bool bDumpedEditorOnlyMetadata = false;
 
 public:
 	static bool InitEngineCore();
@@ -85,6 +90,13 @@ public:
 
 			ReportProgress("Generator: GObjects dumps complete");
         }
+
+		if (!bDumpedEditorOnlyMetadata)
+		{
+			bDumpedEditorOnlyMetadata = true;
+			ReportProgress("Generator: editor-only metadata");
+			DumpEditorOnlyMetadata(DumperFolder);
+		}
 
 		ReportProgress("Generator: output folders");
         if (!SetupFolders(GeneratorType::MainFolderName, GeneratorType::MainFolder, GeneratorType::SubfolderName, GeneratorType::Subfolder))

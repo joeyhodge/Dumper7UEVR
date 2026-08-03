@@ -68,6 +68,8 @@ private:
 class FName
 {
 public:
+	using ExternalToStringCallback = std::wstring(*)(const void* Name);
+
 	enum class EOffsetOverrideType
 	{
 		AppendString,
@@ -87,6 +89,7 @@ private:
 	inline static const void* (*GetNameEntryFromName)(uint32 ComparisonIndex) = nullptr;
 
 	inline static std::wstring(*ToStr)(const void* Name) = nullptr;
+	inline static ExternalToStringCallback ExternalToString = nullptr;
 
 private:
 	const uint8* Address;
@@ -99,6 +102,8 @@ public:
 public:
 	static void Init_Windows(bool bForceGNames = false);
 	static void InitFallback();
+	static void SetExternalToStringCallback(ExternalToStringCallback Callback);
+	static bool IsInitialized();
 
 	static void Init(int32 OverrideOffset, EOffsetOverrideType OverrideType = EOffsetOverrideType::AppendString, bool bIsNamePool = false, const char* const ModuleName = Settings::General::DefaultModuleName);
 
