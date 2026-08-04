@@ -2,6 +2,8 @@
 #include "SharedPredefinedMembers.h"
 
 #include "Managers/PackageManager.h"
+#include "OffsetFinder/Offsets.h"
+#include "Platform.h"
 
 #include <algorithm>
 #include <fstream>
@@ -24,6 +26,103 @@ public:
 		return CppGenerator::GetMemberTypeString(Property);
 	}
 };
+
+namespace
+{
+	bool IsCurrentIDAObject(UEObject Object)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Class + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() ||
+			ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
+		{
+			return false;
+		}
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		return Class != nullptr && !Platform::IsBadReadPtr(Class);
+	}
+
+	bool TryGetCurrentIDAObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
+	{
+		OutCastFlags = EClassCastFlags::None;
+		if (!IsCurrentIDAObject(Object))
+			return false;
+
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Platform::IsBadReadPtr(Class + Off::UClass::CastFlags) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+		{
+			return false;
+		}
+
+		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
+	}
+
+	bool TryGetCurrentIDAObjectVft(UEObject Object, void*& OutVft)
+	{
+		OutVft = nullptr;
+		if (!IsCurrentIDAObject(Object))
+			return false;
+
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Platform::IsBadReadPtr(Address) ||
+			Platform::IsBadReadPtr(Address + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		OutVft = *reinterpret_cast<void* const*>(Address);
+		return OutVft != nullptr && !Platform::IsBadReadPtr(OutVft);
+	}
+
+	bool TryGetCurrentFunctionExec(UEFunction Function, void*& OutExecFunction)
+	{
+		OutExecFunction = nullptr;
+		if (!IsCurrentIDAObject(Function))
+			return false;
+
+		const auto* Address = static_cast<const uint8*>(Function.GetAddress());
+		const auto* ExecFunctionAddress = Address + Off::UFunction::ExecFunction;
+		if (Platform::IsBadReadPtr(ExecFunctionAddress) ||
+			Platform::IsBadReadPtr(ExecFunctionAddress + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		OutExecFunction = *reinterpret_cast<void* const*>(ExecFunctionAddress);
+		return OutExecFunction != nullptr && !Platform::IsBadReadPtr(OutExecFunction);
+	}
+
+	bool TryGetCurrentClassDefaultObject(UEClass Class, UEObject& OutDefaultObject)
+	{
+		OutDefaultObject = nullptr;
+		if (!IsCurrentIDAObject(Class) || Off::UClass::ClassDefaultObject < 0)
+			return false;
+
+		const auto* Address = static_cast<const uint8*>(Class.GetAddress());
+		const auto* DefaultObjectAddress = Address + Off::UClass::ClassDefaultObject;
+		if (Platform::IsBadReadPtr(DefaultObjectAddress) ||
+			Platform::IsBadReadPtr(DefaultObjectAddress + sizeof(void*) - 1))
+		{
+			return false;
+		}
+
+		OutDefaultObject = UEObject(*reinterpret_cast<void* const*>(DefaultObjectAddress));
+		return IsCurrentIDAObject(OutDefaultObject);
+	}
+}
 
 std::string GenerateFunctionDeclarationForIDA(const StructWrapper& OwnerClass, const FunctionWrapper& Func)
 {
@@ -735,17 +834,39 @@ void IDAMappingGenerator::GenerateSingleEnum(const EnumWrapper& Enum, std::strin
 	}
 }
 
-bool IDAMappingGenerator::GenerateVTableName(std::stringstream& VTableData, std::stringstream& NameData, UEObject DefaultObject)
+bool IDAMappingGenerator::GenerateVTableName(std::stringstream& VTableData, std::stringstream& NameData, UEClass Class)
 {
-	const UEClass Class = DefaultObject.GetClass();
-	const UEClass Super = Class.GetSuper().Cast<UEClass>();
-
-	if (Super && DefaultObject.GetVft() == Super.GetDefaultObject().GetVft())
+	if (!IsCurrentIDAObject(Class))
 		return false;
+
+	const int32 ClassIndex = Class.GetIndex();
+	if (ClassIndex < 0 || !StructManager::GetStructInfos().contains(ClassIndex))
+		return false;
+
+	UEObject DefaultObject{};
+	void* Vft = nullptr;
+	if (!TryGetCurrentClassDefaultObject(Class, DefaultObject) ||
+		!TryGetCurrentIDAObjectVft(DefaultObject, Vft))
+	{
+		return false;
+	}
+
+	const UEClass Super = Class.GetSuper().Cast<UEClass>();
+	if (Super && IsCurrentIDAObject(Super) && StructManager::GetStructInfos().contains(Super.GetIndex()))
+	{
+		UEObject SuperDefaultObject{};
+		void* SuperVft = nullptr;
+		if (TryGetCurrentClassDefaultObject(Super, SuperDefaultObject) &&
+			TryGetCurrentIDAObjectVft(SuperDefaultObject, SuperVft) &&
+			Vft == SuperVft)
+		{
+			return false;
+		}
+	}
 
 	IDAMappingsLayouts::NamedVTable Variable;
 	Variable.Name = AddNameToData(NameData, Class.GetCppName() + "_VFT");
-	Variable.VTableOffset = static_cast<IDAMappingsLayouts::OffsetType>(Platform::GetOffset(DefaultObject.GetVft()));
+	Variable.VTableOffset = static_cast<IDAMappingsLayouts::OffsetType>(Platform::GetOffset(Vft));
 	Variable.SuperVTableOffset = IDAMappingsLayouts::InvalidStringOffset;
 
 	WriteNamedVTableToStream(VTableData, Variable);
@@ -798,6 +919,9 @@ void IDAMappingGenerator::GenerateClassFunctions(std::stringstream& ExecFuncData
 {
 	static std::unordered_map<uint32, std::string> Funcs;
 
+	if (!IsCurrentIDAObject(Class))
+		return;
+
 	const int32 ClassIndex = Class.GetIndex();
 	if (ClassIndex < 0 || !StructManager::GetStructInfos().contains(ClassIndex))
 	{
@@ -815,8 +939,14 @@ void IDAMappingGenerator::GenerateClassFunctions(std::stringstream& ExecFuncData
 			continue;
 
 		const UEFunction Func = WrappedFunc.GetUnrealFunction();
+		if (!IsCurrentIDAObject(Func))
+			continue;
+
 		const int32 FunctionIndex = Func.GetIndex();
-		if (FunctionIndex < 0 || !StructManager::GetStructInfos().contains(FunctionIndex))
+		EClassCastFlags FunctionCastFlags{};
+		if (FunctionIndex < 0 || !StructManager::GetStructInfos().contains(FunctionIndex) ||
+			!TryGetCurrentIDAObjectCastFlags(Func, FunctionCastFlags) ||
+			!(FunctionCastFlags & EClassCastFlags::Function))
 		{
 			Generator::ReportProgress(
 				"IDA mappings: skipping function without struct metadata owner=" +
@@ -828,8 +958,12 @@ void IDAMappingGenerator::GenerateClassFunctions(std::stringstream& ExecFuncData
 		if (!WrappedFunc.HasFunctionFlag(EFunctionFlags::Native))
 			continue;
 
+		void* ExecFunction = nullptr;
+		if (!TryGetCurrentFunctionExec(Func, ExecFunction))
+			continue;
+
 		const std::string MangledName = MangleUFunctionName(Class.GetCppName(), Func.GetValidName());
-		const uint32 Offset = static_cast<uint32>(Platform::GetOffset(Func.GetExecFunction()));
+		const uint32 Offset = static_cast<uint32>(Platform::GetOffset(ExecFunction));
 
 		auto [It, bInserted] = Funcs.emplace(Offset, Func.GetFullName());
 
@@ -953,15 +1087,28 @@ void IDAMappingGenerator::Generate()
 	uint32_t NumStructs = 0;
 	uint32_t NumVTables = 0;
 
+	Generator::ReportProgress("IDA mappings: internal enums");
 	// Generate internal engine enums (EObjectFlags, EFunctionFlags, EClassCastFlags) before reflected enums
 	NumEnums += GenerateInternalEnums(EnumData, NameData);
 
+	Generator::ReportProgress("IDA mappings: predefined types");
 	// Generate known UE types (TArray, FString, FName, etc.) before reflected structs
 	NumStructs += GeneratePredefinedTypes(StructData, NameData);
 
+	Generator::ReportProgress("IDA mappings: reflected packages");
+	const int32 TotalPackages = static_cast<int32>(PackageManager::GetPackageInfos().size());
+	int32 ProcessedPackages = 0;
 	// Generate enums and structs from packages
 	for (PackageInfoHandle Package : PackageManager::IterateOverPackageInfos())
 	{
+		++ProcessedPackages;
+		if (ProcessedPackages == 1 || (ProcessedPackages % 0x40) == 0 || ProcessedPackages == TotalPackages)
+		{
+			Generator::ReportProgress(
+				"IDA mappings: reflected package " + std::to_string(ProcessedPackages) + "/" +
+				std::to_string(TotalPackages));
+		}
+
 		if (Package.IsEmpty())
 			continue;
 
@@ -972,7 +1119,15 @@ void IDAMappingGenerator::Generate()
 				if (!EnumManager::GetEnumInfos().contains(EnumIdx))
 					continue;
 
-				GenerateSingleEnum(ObjectArray::GetByIndex<UEEnum>(EnumIdx), EnumData, NameData);
+				const UEObject EnumObject = ObjectArray::GetByIndex(EnumIdx);
+				EClassCastFlags CastFlags{};
+				if (!TryGetCurrentIDAObjectCastFlags(EnumObject, CastFlags) ||
+					!(CastFlags & EClassCastFlags::Enum))
+				{
+					continue;
+				}
+
+				GenerateSingleEnum(EnumObject.Cast<UEEnum>(), EnumData, NameData);
 				NumEnums++;
 			}
 		}
@@ -991,7 +1146,15 @@ void IDAMappingGenerator::Generate()
 					return;
 				}
 
-				GenerateSingleStruct(ObjectArray::GetByIndex<UEStruct>(Index), StructData, NameData);
+				const UEObject StructObject = ObjectArray::GetByIndex(Index);
+				EClassCastFlags CastFlags{};
+				if (!TryGetCurrentIDAObjectCastFlags(StructObject, CastFlags) ||
+					!(CastFlags & EClassCastFlags::Struct))
+				{
+					return;
+				}
+
+				GenerateSingleStruct(StructObject.Cast<UEStruct>(), StructData, NameData);
 				NumStructs++;
 			});
 		}
@@ -1010,25 +1173,54 @@ void IDAMappingGenerator::Generate()
 					return;
 				}
 
-				GenerateSingleStruct(ObjectArray::GetByIndex<UEStruct>(Index), StructData, NameData);
+				const UEObject ClassObject = ObjectArray::GetByIndex(Index);
+				EClassCastFlags CastFlags{};
+				if (!TryGetCurrentIDAObjectCastFlags(ClassObject, CastFlags) ||
+					!(CastFlags & EClassCastFlags::Class))
+				{
+					return;
+				}
+
+				GenerateSingleStruct(ClassObject.Cast<UEStruct>(), StructData, NameData);
 				NumStructs++;
 			});
 		}
 	}
 
-	// Generate exec functions (VTables + class functions)
-	for (UEObject Obj : ObjectArray())
+	Generator::ReportProgress("IDA mappings: validated class symbols");
+	const StructManager::OverrideMapType& StructInfos = StructManager::GetStructInfos();
+	const int32 TotalStructInfos = static_cast<int32>(StructInfos.size());
+	int32 ProcessedStructInfos = 0;
+	int32 AcceptedClasses = 0;
+
+	// Classes are rooted and already validated by StructManager. Avoid rescanning
+	// every late UObject/CDO from the original UEVR snapshot after the long SDK pass.
+	for (const auto& [Index, Info] : StructInfos)
 	{
-		if (Obj.HasAnyFlags(EObjectFlags::ClassDefaultObject))
+		(void)Info;
+		++ProcessedStructInfos;
+		if (ProcessedStructInfos == 1 || (ProcessedStructInfos % 0x400) == 0 || ProcessedStructInfos == TotalStructInfos)
 		{
-			if (GenerateVTableName(VTableData, NameData, Obj))
-				NumVTables++;
+			Generator::ReportProgress(
+				"IDA mappings: class metadata " + std::to_string(ProcessedStructInfos) + "/" +
+				std::to_string(TotalStructInfos));
 		}
-		else if (Obj.IsA(EClassCastFlags::Class))
-		{
-			GenerateClassFunctions(ExecFuncData, NameData, Obj.Cast<UEClass>());
-		}
+
+		const UEObject Object = ObjectArray::GetByIndex(Index);
+		EClassCastFlags CastFlags{};
+		if (!TryGetCurrentIDAObjectCastFlags(Object, CastFlags) ||
+			!(CastFlags & EClassCastFlags::Class))
+			continue;
+
+		const UEClass Class = Object.Cast<UEClass>();
+		if (GenerateVTableName(VTableData, NameData, Class))
+			NumVTables++;
+
+		GenerateClassFunctions(ExecFuncData, NameData, Class);
+		++AcceptedClasses;
 	}
+
+	Generator::ReportProgress("IDA mappings: class symbols complete: " + std::to_string(AcceptedClasses) + " classes");
 
 	// Generate named variables (GObjects, GNames)
 	uint32_t NumGlobalSymbols = 0;
@@ -1068,6 +1260,7 @@ void IDAMappingGenerator::Generate()
 	if (Off::InSDK::Name::GetNameEntryFromName != 0x0)
 		WriteNamedVar(static_cast<IDAMappingsLayouts::OffsetType>(Off::InSDK::Name::GetNameEntryFromName), "void*", "FName::GetNameEntryFromName");
 
+	Generator::ReportProgress("IDA mappings: serializing output");
 	// Get section data as strings
 	const std::string NameDataStr = NameData.str();
 	const std::string EnumDataStr = EnumData.str();
@@ -1127,4 +1320,5 @@ void IDAMappingGenerator::Generate()
 	IDAMappingsFile.write(NamedVarDataStr.data(), NamedVarDataStr.size());
 	IDAMappingsFile.write(VTableDataStr.data(), VTableDataStr.size());
 	IDAMappingsFile.write(ExecFuncDataStr.data(), ExecFuncDataStr.size());
+	Generator::ReportProgress("IDA mappings: output written");
 }

@@ -1296,6 +1296,23 @@ DWORD HandleMainThreadException()
 		<< " at 0x" << g_last_seh_address;
 #if defined(_M_X64)
 	ss << " (RIP 0x" << g_last_seh_rip << ')';
+
+	MEMORY_BASIC_INFORMATION memory_info{};
+	if (g_last_seh_rip != 0 &&
+		VirtualQuery(reinterpret_cast<const void*>(g_last_seh_rip), &memory_info, sizeof(memory_info)) == sizeof(memory_info) &&
+		memory_info.AllocationBase != nullptr)
+	{
+		char module_path[MAX_PATH]{};
+		const DWORD path_length = GetModuleFileNameA(
+			static_cast<HMODULE>(memory_info.AllocationBase), module_path, static_cast<DWORD>(std::size(module_path)));
+		if (path_length > 0 && path_length < std::size(module_path))
+		{
+			const char* module_name = std::strrchr(module_path, '\\');
+			module_name = module_name != nullptr ? module_name + 1 : module_path;
+			ss << " [" << module_name << "+0x"
+				<< (g_last_seh_rip - reinterpret_cast<uintptr_t>(memory_info.AllocationBase)) << ']';
+		}
+	}
 #endif
     append_status_line(ss.str());
     return 1;

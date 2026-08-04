@@ -65,7 +65,7 @@ private:
     static std::string GetEnumPrefixedName(const EnumWrapper& Enum);
 
 private:
-    static bool GenerateVTableName(std::stringstream& VTableData, std::stringstream& NameData, UEObject DefaultObject);
+    static bool GenerateVTableName(std::stringstream& VTableData, std::stringstream& NameData, UEClass Class);
     static void GenerateClassFunctions(std::stringstream& ExecFuncData, std::stringstream& NameData, UEClass Class);
 
     static void GenerateSingleMember(const PropertyWrapper& Member, std::stringstream& StructData, std::stringstream& NameData, int32 StructSize);
