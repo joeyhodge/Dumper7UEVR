@@ -4,14 +4,51 @@
 #include "Managers/PackageManager.h"
 #include "OffsetFinder/Offsets.h"
 #include "Platform.h"
+#include "Settings.h"
 
 /* Required for marking cyclic-headers in the StructManager */
 #include "Managers/StructManager.h"
 
 namespace
 {
+	bool IsCurrentPackageObjectUnsafe(UEObject Object)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr)
+			return false;
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
+			return false;
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr)
+			return false;
+
+		(void)*reinterpret_cast<const EObjectFlags*>(Address + Off::UObject::Flags);
+		(void)*reinterpret_cast<uint8* const*>(Address + Off::UObject::Outer);
+		(void)*reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
+	}
+
 	bool IsCurrentPackageObject(UEObject Object)
 	{
+		if (Settings::Generator::GameName == "DaysGone")
+		{
+#if defined(_MSC_VER)
+			__try
+			{
+				return IsCurrentPackageObjectUnsafe(Object);
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				return false;
+			}
+#else
+			return IsCurrentPackageObjectUnsafe(Object);
+#endif
+		}
+
 		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
 		if (Address == nullptr ||
 			Platform::IsBadReadPtr(Address + Off::UObject::Flags) ||

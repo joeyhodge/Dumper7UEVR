@@ -4,12 +4,15 @@
 #include "Generators/Generator.h"
 #include "OffsetFinder/Offsets.h"
 #include "Platform.h"
+#include "Unreal/ObjectArray.h"
 #include "Wrappers/MemberWrappers.h"
 
 namespace
 {
-	bool IsCurrentMemberObject(UEObject Object)
+	bool TryGetCurrentObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
 	{
+		OutCastFlags = EClassCastFlags::None;
+
 		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
 		if (Address == nullptr ||
 			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
@@ -20,22 +23,30 @@ namespace
 			return false;
 		}
 
-		void* Class = *reinterpret_cast<void* const*>(Address + Off::UObject::Class);
-		if (Class == nullptr || Platform::IsBadReadPtr(Class))
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
 			return false;
 
-		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
-		return Index >= 0 && Index < ObjectArray::Num() &&
-			ObjectArray::GetByIndex(Index).GetAddress() == Object.GetAddress();
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+		{
+			return false;
+		}
+
+		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
 	}
 
 	UEStruct FindCurrentStructByName(const std::string& Name)
 	{
 		for (UEObject Object : ObjectArray())
 		{
-			if (!IsCurrentMemberObject(Object) ||
-				!Object.IsA(EClassCastFlags::Struct) ||
-				Object.IsA(EClassCastFlags::Function))
+			EClassCastFlags CastFlags{};
+			if (!TryGetCurrentObjectCastFlags(Object, CastFlags) ||
+				!(CastFlags & EClassCastFlags::Struct) ||
+				(CastFlags & EClassCastFlags::Function))
 			{
 				continue;
 			}
@@ -286,9 +297,10 @@ void MemberManager::Init()
 				"Member scan " + std::to_string(ProcessedObjects) + "/" + std::to_string(TotalObjects));
 		}
 
-		if (!IsCurrentMemberObject(Object) ||
-			!Object.IsA(EClassCastFlags::Struct) ||
-			Object.IsA(EClassCastFlags::Function))
+		EClassCastFlags CastFlags{};
+		if (!TryGetCurrentObjectCastFlags(Object, CastFlags) ||
+			!(CastFlags & EClassCastFlags::Struct) ||
+			(CastFlags & EClassCastFlags::Function))
 		{
 			continue;
 		}

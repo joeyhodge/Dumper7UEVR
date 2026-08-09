@@ -6,6 +6,7 @@
 
 #include "Unreal/ObjectArray.h"
 #include "OffsetFinder/Offsets.h"
+#include "Settings.h"
 #include "Utils.h"
 
 #include "Platform.h"
@@ -69,6 +70,27 @@ constexpr inline std::array FChunkedFixedUObjectArrayLayouts =
 
 namespace
 {
+	bool ObjectMatchesFastUnsafe(UEObject Object, const std::string& Name, EClassCastFlags RequiredType)
+	{
+		return Object && Object.IsA(RequiredType) && Object.GetName() == Name;
+	}
+
+	bool TryObjectMatchesFast(UEObject Object, const std::string& Name, EClassCastFlags RequiredType)
+	{
+#if defined(_MSC_VER)
+		__try
+		{
+			return ObjectMatchesFastUnsafe(Object, Name, RequiredType);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+#else
+		return ObjectMatchesFastUnsafe(Object, Name, RequiredType);
+#endif
+	}
+
 	bool IsCurrentDumpObject(UEObject Object, int32 ExpectedIndex = -1)
 	{
 		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
@@ -808,10 +830,15 @@ template<typename UEType>
 UEType ObjectArray::FindObjectFast(const std::string& Name, EClassCastFlags RequiredType)
 {
 	auto ObjArray = ObjectArray();
+	const bool bGuardSparseUE411Snapshot = Settings::Generator::GameName == "DaysGone";
 
 	for (UEObject Object : ObjArray)
 	{
-		if (Object.IsA(RequiredType) && Object.GetName() == Name)
+		const bool bMatches = bGuardSparseUE411Snapshot
+			? TryObjectMatchesFast(Object, Name, RequiredType)
+			: (Object.IsA(RequiredType) && Object.GetName() == Name);
+
+		if (bMatches)
 		{
 			return Object.Cast<UEType>();
 		}

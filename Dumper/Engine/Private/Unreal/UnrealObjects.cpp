@@ -1,4 +1,5 @@
 #include <format>
+#include <type_traits>
 
 #include "Unreal/UnrealObjects.h"
 #include "Unreal/ObjectArray.h"
@@ -519,29 +520,59 @@ bool UEField::IsNextValid() const
 
 std::vector<std::pair<FName, int64>> UEEnum::GetNameValuePairs() const
 {
-	using ValueType = std::conditional_t<sizeof(void*) == 0x8, int64, int32>;
-
-	struct alignas(0x4) Name04Byte { uint8 Pad[0x04]; };
 	struct alignas(0x4) Name08Byte { uint8 Pad[0x08]; };
-	struct alignas(0x4) Name12Byte { uint8 Pad[0x0C]; };
 	struct alignas(0x4) Name16Byte { uint8 Pad[0x10]; };
 	struct alignas(0x4) UInt8As64 { uint8 Bytes[sizeof(void*)]; inline operator int64() const { return Bytes[0]; }; };
+	static_assert(sizeof(TPair<Name08Byte, uint8>) == 0x0C);
+	static_assert(sizeof(TPair<Name16Byte, uint8>) == 0x14);
 
 	static constexpr uintptr_t PointeFlagHasTag =  0x1;
 	static constexpr uintptr_t PointerMaskNoTag = ~0x1;
+	static constexpr int32 MaxReasonableEnumValues = 0x10000;
+
+	auto IsReadableRange = [](const void* Address, const size_t Size)
+	{
+		if (Address == nullptr || Size == 0)
+			return false;
+
+		const uintptr_t Begin = reinterpret_cast<uintptr_t>(Address);
+		const uintptr_t End = Begin + Size - 1;
+		return End >= Begin && !Platform::IsBadReadPtr(Begin) && !Platform::IsBadReadPtr(End);
+	};
+
+	auto IsValidArray = [&](const auto& Array)
+	{
+		using ElementType = std::remove_cv_t<std::remove_pointer_t<decltype(Array.GetDataPtr())>>;
+
+		const int32 Num = Array.Num();
+		const int32 Max = Array.Max();
+		if (Num < 0 || Num > MaxReasonableEnumValues || Max < Num || Max > MaxReasonableEnumValues)
+			return false;
+
+		if (Num == 0)
+			return true;
+
+		const ElementType* Data = Array.GetDataPtr();
+		return IsReadableRange(Data, sizeof(ElementType) * static_cast<size_t>(Num));
+	};
 
 	/*
 	 * For UEVersion >= UE5.6 
 	 * 
 	 * See: https://github.com/EpicGames/UnrealEngine/blob/ue5-main/Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h#L3411
 	*/
-	static auto GetNameValuePairsForFNameData = [](const uintptr_t Object, const uint32_t EnumNamesOffset, const uint32_t FNameSize)
+	auto GetNameValuePairsForFNameData = [&](const uintptr_t ObjectAddress, const int32 EnumNamesOffset, const uint32 FNameSize)
 	{
 		std::vector<std::pair<FName, int64>> Ret;
+		if (EnumNamesOffset < 0 || FNameSize == 0 || FNameSize > 0x20 ||
+			!IsReadableRange(reinterpret_cast<const void*>(ObjectAddress + EnumNamesOffset), 0x18))
+		{
+			return Ret;
+		}
 
-		const uintptr_t TaggedNamesPtr = *reinterpret_cast<uintptr_t*>(Object + EnumNamesOffset);
+		const uintptr_t TaggedNamesPtr = *reinterpret_cast<const uintptr_t*>(ObjectAddress + EnumNamesOffset);
 		const bool bIsNamesPtrTagged = (TaggedNamesPtr & PointeFlagHasTag) != 0;
-		const uint8* NamesPtr = reinterpret_cast<uint8*>(TaggedNamesPtr & PointerMaskNoTag);
+		const uint8* NamesPtr = reinterpret_cast<const uint8*>(TaggedNamesPtr & PointerMaskNoTag);
 
 		if (!bIsNamesPtrTagged)
 		{
@@ -554,10 +585,23 @@ std::vector<std::pair<FName, int64>> UEEnum::GetNameValuePairs() const
 			return Ret;
 		}
 
-		const int64* Values = reinterpret_cast<int64*>(*reinterpret_cast<uintptr_t*>(Object + EnumNamesOffset + 0x8) & PointerMaskNoTag);
-		const int32 NumValues = *reinterpret_cast<int32*>(Object + EnumNamesOffset + 0x10);
+		const int64* Values = reinterpret_cast<const int64*>(
+			*reinterpret_cast<const uintptr_t*>(ObjectAddress + EnumNamesOffset + 0x8) & PointerMaskNoTag);
+		const int32 NumValues = *reinterpret_cast<const int32*>(ObjectAddress + EnumNamesOffset + 0x10);
+		if (NumValues < 0 || NumValues > MaxReasonableEnumValues)
+			return Ret;
 
-		for (uint32_t i = 0; i < NumValues; i++)
+		if (NumValues == 0)
+			return Ret;
+
+		if (!IsReadableRange(NamesPtr, static_cast<size_t>(FNameSize) * NumValues) ||
+			!IsReadableRange(Values, sizeof(int64) * static_cast<size_t>(NumValues)))
+		{
+			return Ret;
+		}
+
+		Ret.reserve(NumValues);
+		for (int32 i = 0; i < NumValues; i++)
 		{
 			Ret.push_back({ FName(NamesPtr + (i * FNameSize)), Values[i] });
 		}
@@ -570,23 +614,28 @@ std::vector<std::pair<FName, int64>> UEEnum::GetNameValuePairs() const
 		return GetNameValuePairsForFNameData(reinterpret_cast<const uintptr_t>(Object), Off::UEnum::Names - 0x8, Off::InSDK::Name::FNameSize);
 	}
 
-
-	static auto GetNameValuePairsWithIndex = []<typename NameType, typename ValueType>(const TArray<TPair<NameType, ValueType>>&EnumNameValuePairs)
+	auto GetNameValuePairsWithIndex = [&]<typename NameType, typename ValueType>(const TArray<TPair<NameType, ValueType>>& EnumNameValuePairs)
 	{
 		std::vector<std::pair<FName, int64>> Ret;
+		if (!IsValidArray(EnumNameValuePairs))
+			return Ret;
 
+		Ret.reserve(EnumNameValuePairs.Num());
 		for (int i = 0; i < EnumNameValuePairs.Num(); i++)
 		{
-			Ret.push_back({ FName(&EnumNameValuePairs[i].First), EnumNameValuePairs[i].Second });
+			Ret.push_back({ FName(&EnumNameValuePairs[i].First), static_cast<int64>(EnumNameValuePairs[i].Second) });
 		}
 
 		return Ret;
 	};
 
-	static auto GetNameValuePairs = []<typename NameType>(const TArray<NameType>&EnumNameValuePairs)
+	auto GetNameValuePairs = [&]<typename NameType>(const TArray<NameType>& EnumNameValuePairs)
 	{
 		std::vector<std::pair<FName, int64>> Ret;
+		if (!IsValidArray(EnumNameValuePairs))
+			return Ret;
 
+		Ret.reserve(EnumNameValuePairs.Num());
 		for (int i = 0; i < EnumNameValuePairs.Num(); i++)
 		{
 			Ret.push_back({ FName(&EnumNameValuePairs[i]), i });
@@ -595,49 +644,35 @@ std::vector<std::pair<FName, int64>> UEEnum::GetNameValuePairs() const
 		return Ret;
 	};
 
-	if constexpr (Settings::EngineCore::bCheckEnumNamesInUEnum)
-	{
-		static auto SetIsNamesOnlyIfDevsTookCrack = [&]<typename NameType>(const TArray<TPair<NameType, UInt8As64>>&EnumNames)
-		{
-			/* This is a hacky workaround for UEnum::Names which sometimes store the enum-value and sometimes don't. I've seen much of UE, but what drugs did some devs take???? */
-			//Settings::Internal::bIsEnumNameOnly = EnumNames[0].Second != 0 || EnumNames[1].Second != 1;
-			// TODO (encryqed): Bruder was??? fix das mal iwi das geht nur durch hardcode idk frag fisch 
-			Settings::Internal::bIsEnumNameOnly = false;
-		};
-
-		if (Settings::Internal::bUseCasePreservingName)
-		{
-			SetIsNamesOnlyIfDevsTookCrack(*reinterpret_cast<TArray<TPair<Name16Byte, UInt8As64>>*>(Object + Off::UEnum::Names));
-		}
-		else
-		{
-			SetIsNamesOnlyIfDevsTookCrack(*reinterpret_cast<TArray<TPair<Name08Byte, UInt8As64>>*>(Object + Off::UEnum::Names));
-		}
-	}
-
 	if (Settings::Internal::bIsEnumNameOnly)
 	{
 		if (Settings::Internal::bUseCasePreservingName)
-			return GetNameValuePairs(*reinterpret_cast<TArray<Name16Byte>*>(Object + Off::UEnum::Names));
+			return GetNameValuePairs(*reinterpret_cast<const TArray<Name16Byte>*>(Object + Off::UEnum::Names));
 
-		return GetNameValuePairs(*reinterpret_cast<TArray<Name08Byte>*>(Object + Off::UEnum::Names));
+		return GetNameValuePairs(*reinterpret_cast<const TArray<Name08Byte>*>(Object + Off::UEnum::Names));
 	}
-	else
+
+	if (Settings::Internal::bIsCompactEnumValue)
 	{
-		/* This only applies very very rarely on weird UE4.13 or UE4.14 games where the devs didn't know what they were doing. */
-		if (Settings::Internal::bIsSmallEnumValue)
-		{
-			if (Settings::Internal::bUseCasePreservingName)
-				return GetNameValuePairsWithIndex(*reinterpret_cast<TArray<TPair<Name16Byte, UInt8As64>>*>(Object + Off::UEnum::Names));
-
-			return GetNameValuePairsWithIndex(*reinterpret_cast<TArray<TPair<Name08Byte, UInt8As64>>*>(Object + Off::UEnum::Names));
-		}
-
 		if (Settings::Internal::bUseCasePreservingName)
-			return GetNameValuePairsWithIndex(*reinterpret_cast<TArray<TPair<Name16Byte, int64>>*>(Object + Off::UEnum::Names));
+			return GetNameValuePairsWithIndex(*reinterpret_cast<const TArray<TPair<Name16Byte, uint8>>*>(Object + Off::UEnum::Names));
 
-		return GetNameValuePairsWithIndex(*reinterpret_cast<TArray<TPair<Name08Byte, int64>>*>(Object + Off::UEnum::Names));
+		return GetNameValuePairsWithIndex(*reinterpret_cast<const TArray<TPair<Name08Byte, uint8>>*>(Object + Off::UEnum::Names));
 	}
+
+	/* Some modified UE4 builds pad an 8-bit enum value to pointer width. */
+	if (Settings::Internal::bIsSmallEnumValue)
+	{
+		if (Settings::Internal::bUseCasePreservingName)
+			return GetNameValuePairsWithIndex(*reinterpret_cast<const TArray<TPair<Name16Byte, UInt8As64>>*>(Object + Off::UEnum::Names));
+
+		return GetNameValuePairsWithIndex(*reinterpret_cast<const TArray<TPair<Name08Byte, UInt8As64>>*>(Object + Off::UEnum::Names));
+	}
+
+	if (Settings::Internal::bUseCasePreservingName)
+		return GetNameValuePairsWithIndex(*reinterpret_cast<const TArray<TPair<Name16Byte, int64>>*>(Object + Off::UEnum::Names));
+
+	return GetNameValuePairsWithIndex(*reinterpret_cast<const TArray<TPair<Name08Byte, int64>>*>(Object + Off::UEnum::Names));
 }
 
 std::string UEEnum::GetSingleName(int32 Index) const

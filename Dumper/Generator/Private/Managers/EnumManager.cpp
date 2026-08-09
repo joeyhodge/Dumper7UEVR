@@ -2,13 +2,18 @@
 #include "Generators/Generator.h"
 #include "OffsetFinder/Offsets.h"
 #include "Platform.h"
+#include "Unreal/ObjectArray.h"
 
 namespace
 {
-	bool IsCurrentEnumObject(UEObject Object)
+	bool TryGetCurrentObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
 	{
+		OutCastFlags = EClassCastFlags::None;
+
 		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
 		if (Address == nullptr ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Flags) ||
+			Platform::IsBadReadPtr(Address + Off::UObject::Flags + sizeof(EObjectFlags) - 1) ||
 			Platform::IsBadReadPtr(Address + Off::UObject::Index) ||
 			Platform::IsBadReadPtr(Address + Off::UObject::Index + sizeof(int32) - 1) ||
 			Platform::IsBadReadPtr(Address + Off::UObject::Class) ||
@@ -17,13 +22,20 @@ namespace
 			return false;
 		}
 
-		void* Class = *reinterpret_cast<void* const*>(Address + Off::UObject::Class);
-		if (Class == nullptr || Platform::IsBadReadPtr(Class))
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
 			return false;
 
-		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
-		return Index >= 0 && Index < ObjectArray::Num() &&
-			ObjectArray::GetByIndex(Index).GetAddress() == Object.GetAddress();
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags) ||
+			Platform::IsBadReadPtr(Class + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+		{
+			return false;
+		}
+
+		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
 	}
 }
 
@@ -120,13 +132,14 @@ void EnumManager::InitInternal()
 				"Enum scan " + std::to_string(ProcessedObjects) + "/" + std::to_string(TotalObjects));
 		}
 
-		if (!IsCurrentEnumObject(Obj))
+		EClassCastFlags CastFlags{};
+		if (!TryGetCurrentObjectCastFlags(Obj, CastFlags))
 			continue;
 
 		if (Obj.HasAnyFlags(EObjectFlags::ClassDefaultObject))
 			continue;
 
-		if (!Settings::Internal::bHasUnderlayingTypeInUEnum && Obj.IsA(EClassCastFlags::Struct))
+		if (!Settings::Internal::bHasUnderlayingTypeInUEnum && (CastFlags & EClassCastFlags::Struct))
 		{
 			UEStruct ObjAsStruct = Obj.Cast<UEStruct>();
 
@@ -152,7 +165,8 @@ void EnumManager::InitInternal()
 					UnderlayingProperty = Property;
 				}
 
-				if (!IsCurrentEnumObject(Enum))
+				EClassCastFlags EnumCastFlags{};
+				if (!TryGetCurrentObjectCastFlags(Enum, EnumCastFlags) || !(EnumCastFlags & EClassCastFlags::Enum))
 					continue;
 
 				EnumInfo& Info = EnumInfoOverrides[Enum.GetIndex()];
@@ -176,7 +190,7 @@ void EnumManager::InitInternal()
 				}
 			}
 		}
-		else if (Obj.IsA(EClassCastFlags::Enum))
+		else if (CastFlags & EClassCastFlags::Enum)
 		{
 			UEEnum ObjAsEnum = Obj.Cast<UEEnum>();
 

@@ -1,5 +1,6 @@
 #include <vector>
 #include <random>
+#include <cstring>
 
 #include "OffsetFinder/OffsetFinder.h"
 #include "Unreal/ObjectArray.h"
@@ -704,59 +705,123 @@ int32_t OffsetFinder::FindFieldClassCastFlagsOffset()
 	return OffsetNotFound;
 }
 
-// This function assumes that the EnumObj passed in is valid and that the values of the enum are starting at 0
-void InializeUEnumSettings(const void* EnumObj, const uint32_t UEnumNumValuesOffset)
+// The probe enums used by FindEnumNamesOffset have sequential values starting at zero.
+void InitializeUEnumSettings(const void* EnumObj, const int32 UEnumNumValuesOffset)
 {
 	constexpr uintptr_t UE5EnumDynamicAllocationTag = 0x1;
+	constexpr int32 MaxReasonableEnumValues = 0x10000;
+
+	Settings::Internal::bIsEnumNameOnly = false;
+	Settings::Internal::bIsSmallEnumValue = false;
+	Settings::Internal::bIsCompactEnumValue = false;
+	Settings::Internal::bIsNewUE5EnumNamesContainer = false;
+
+	auto IsReadableRange = [](const void* Address, const size_t Size)
+	{
+		if (Address == nullptr || Size == 0)
+			return false;
+
+		const uintptr_t Begin = reinterpret_cast<uintptr_t>(Address);
+		const uintptr_t End = Begin + Size - 1;
+		return End >= Begin && !Platform::IsBadReadPtr(Begin) && !Platform::IsBadReadPtr(End);
+	};
+
+	if (EnumObj == nullptr || UEnumNumValuesOffset == OffsetFinder::OffsetNotFound ||
+		UEnumNumValuesOffset < static_cast<int32>(sizeof(void*)))
+	{
+		Settings::Internal::bIsEnumNameOnly = true;
+		std::cerr << "UEnum names layout: unavailable; using names-only fallback\n";
+		return;
+	}
+
+	const uintptr_t ObjectAddress = reinterpret_cast<uintptr_t>(EnumObj);
 
 	{
 		// On UE5.6+ there are two arrays, one for just the FName*/UTF8Char* and one for just int64* values. Check if the array before NumValues contains just Values or TPair<Name, Value>.
-		const uintptr_t PossibleValueArrayTaggedPtr = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(EnumObj) + UEnumNumValuesOffset - sizeof(void*));
-		const int64* PossibleValueArrayPtr = reinterpret_cast<const int64*>(PossibleValueArrayTaggedPtr & ~UE5EnumDynamicAllocationTag);
-
-		if (!Platform::IsBadReadPtr(PossibleValueArrayPtr) && !Platform::IsBadReadPtr(PossibleValueArrayPtr + 1) && !Platform::IsBadReadPtr(PossibleValueArrayPtr + 2))
+		const uintptr_t PossibleValueArrayField = ObjectAddress + UEnumNumValuesOffset - sizeof(void*);
+		if (IsReadableRange(reinterpret_cast<const void*>(PossibleValueArrayField), sizeof(uintptr_t)))
 		{
-			if (PossibleValueArrayPtr[0] == 0 && PossibleValueArrayPtr[1] == 1 && PossibleValueArrayPtr[2] == 2)
+			const uintptr_t PossibleValueArrayTaggedPtr = *reinterpret_cast<const uintptr_t*>(PossibleValueArrayField);
+			const int64* PossibleValueArrayPtr = reinterpret_cast<const int64*>(PossibleValueArrayTaggedPtr & ~UE5EnumDynamicAllocationTag);
+
+			if (IsReadableRange(PossibleValueArrayPtr, sizeof(int64) * 3) &&
+				PossibleValueArrayPtr[0] == 0 && PossibleValueArrayPtr[1] == 1 && PossibleValueArrayPtr[2] == 2)
 			{
 				Settings::Internal::bIsNewUE5EnumNamesContainer = true;
+				std::cerr << "UEnum names layout: UE5.6+ FNameData\n";
 				return;
 			}
 		}
 	}
 
-	using ValueType = std::conditional_t<sizeof(void*) == 0x8, int64, int32>;
-	struct Name08Byte { uint8 Pad[0x08]; };
-	struct Name16Byte { uint8 Pad[0x10]; };
-
-	const uint8* ArrayAddress = static_cast<const uint8*>(EnumObj) + UEnumNumValuesOffset - 0x8;
-
-	auto InitEnumSettings = []<typename NameType>(const TArray<TPair<NameType, ValueType>>&ArrayOfNameValuePairs)
+	struct RawArrayHeader
 	{
-		if (ArrayOfNameValuePairs[1].Second == 1)
-			return;
-
-		if constexpr (Settings::EngineCore::bCheckEnumNamesInUEnum)
-		{
-			if (static_cast<uint8_t>(ArrayOfNameValuePairs[1].Second) == 1 && static_cast<uint8_t>(ArrayOfNameValuePairs[2].Second) == 2)
-			{
-
-				Settings::Internal::bIsSmallEnumValue = true;
-				return;
-			}
-		}
-
-		Settings::Internal::bIsEnumNameOnly = true;
+		const uint8* Data;
+		int32 Num;
+		int32 Max;
 	};
 
+	const uintptr_t ArrayAddress = ObjectAddress + UEnumNumValuesOffset - sizeof(void*);
+	if (!IsReadableRange(reinterpret_cast<const void*>(ArrayAddress), sizeof(RawArrayHeader)))
+	{
+		Settings::Internal::bIsEnumNameOnly = true;
+		std::cerr << "UEnum names layout: unreadable array header; using names-only fallback\n";
+		return;
+	}
 
-	if (Settings::Internal::bUseCasePreservingName)
+	const RawArrayHeader& Header = *reinterpret_cast<const RawArrayHeader*>(ArrayAddress);
+	if (Header.Data == nullptr || Header.Num < 3 || Header.Num > MaxReasonableEnumValues ||
+		Header.Max < Header.Num || Header.Max > MaxReasonableEnumValues)
 	{
-		InitEnumSettings(*reinterpret_cast<const TArray<TPair<Name16Byte, ValueType>>*>(ArrayAddress));
+		Settings::Internal::bIsEnumNameOnly = true;
+		std::cerr << "UEnum names layout: invalid probe array; using names-only fallback\n";
+		return;
 	}
-	else
+
+	auto ValuesMatch = [&](const size_t ValueOffset, const size_t ElementStride, const size_t ValueSize)
 	{
-		InitEnumSettings(*reinterpret_cast<const TArray<TPair<Name08Byte, ValueType>>*>(ArrayAddress));
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			const uint8* ValueAddress = Header.Data + ValueOffset + (ElementStride * Index);
+			if (!IsReadableRange(ValueAddress, ValueSize))
+				return false;
+
+			int64 Value = 0;
+			std::memcpy(&Value, ValueAddress, ValueSize);
+			if (Value != Index)
+				return false;
+		}
+
+		return true;
+	};
+
+	const size_t FNameSize = Settings::Internal::bUseCasePreservingName ? 0x10 : 0x08;
+	const size_t Int64ValueOffset = (FNameSize + alignof(int64) - 1) & ~(alignof(int64) - 1);
+	const size_t Int64PairStride = Int64ValueOffset + sizeof(int64);
+	if (ValuesMatch(Int64ValueOffset, Int64PairStride, sizeof(int64)))
+	{
+		std::cerr << "UEnum names layout: TPair<FName, int64>\n";
+		return;
 	}
+
+	const size_t CompactPairStride = (FNameSize + sizeof(uint8) + alignof(uint32) - 1) & ~(alignof(uint32) - 1);
+	if (ValuesMatch(FNameSize, CompactPairStride, sizeof(uint8)))
+	{
+		Settings::Internal::bIsCompactEnumValue = true;
+		std::cerr << "UEnum names layout: compact TPair<FName, uint8> (UE4.11-era)\n";
+		return;
+	}
+
+	const size_t PaddedSmallPairStride = FNameSize + sizeof(void*);
+	if (ValuesMatch(FNameSize, PaddedSmallPairStride, sizeof(uint8)))
+	{
+		Settings::Internal::bIsSmallEnumValue = true;
+		std::cerr << "UEnum names layout: padded TPair<FName, uint8>\n";
+		return;
+	}
+
+	Settings::Internal::bIsEnumNameOnly = true;
+	std::cerr << "UEnum names layout: TArray<FName>\n";
 }
 
 /* UEnum */
@@ -777,7 +842,10 @@ int32_t OffsetFinder::FindEnumNamesOffset()
 		UEnumNumValuesOffset = FindOffset(Infos);
 	}
 
-	InializeUEnumSettings(Infos[0].first, UEnumNumValuesOffset);
+	if (UEnumNumValuesOffset == OffsetNotFound)
+		return OffsetNotFound;
+
+	InitializeUEnumSettings(Infos[0].first, UEnumNumValuesOffset);
 
 	return UEnumNumValuesOffset - sizeof(void*);
 }

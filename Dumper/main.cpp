@@ -515,11 +515,25 @@ bool capture_uevr_object_snapshot()
 
 	repair_uevr_reflection_snapshot(snapshot);
 
+	if (object_count == 0x200000 && item_stride == 0x10)
+	{
+		// UE4.11's fixed object array may expose its full capacity through UEVR.
+		// Removing only trailing null slots preserves every live object's index.
+		const size_t capacity_count = snapshot.size();
+		while (!snapshot.empty() && snapshot.back() == nullptr)
+			snapshot.pop_back();
+
+		API::get()->log_info(
+			"dump.dll: trimmed sparse UE4.11 object snapshot from %zu to %zu entries",
+			capacity_count,
+			snapshot.size());
+	}
+
 	g_uevr_object_array = object_array;
 	g_uevr_raw_object_array = object_array;
 	g_uevr_item_stride = item_stride;
 	g_uevr_object_snapshot.swap(snapshot);
-	API::get()->log_info("dump.dll: captured UEVR object snapshot with %d entries", object_count);
+	API::get()->log_info("dump.dll: captured UEVR object snapshot with %zu entries", g_uevr_object_snapshot.size());
 
 	auto FindPointerOffset = [](const void* Base, const void* Value, int32 MinOffset, int32 MaxOffset) -> int32
 	{
@@ -1198,6 +1212,10 @@ DWORD MainThreadImpl(HMODULE module)
 		{
 			append_status_line("UEVR object snapshot is unavailable; falling back to Dumper-7 raw discovery");
 		}
+
+		// Some compatibility decisions are needed during engine-core discovery.
+		if (Settings::Generator::GameName.empty())
+			Settings::Generator::GameName = get_process_name();
 
 		append_status_line("Stage: initializing engine core");
 		if (!Generator::InitEngineCore())

@@ -89,6 +89,15 @@ void Off::InSDK::ProcessEvent::InitPE(const int32 Index, const char* const Modul
 /* UWorld */
 void Off::InSDK::World::InitGWorld()
 {
+	if (Settings::Generator::GameName == "DaysGone")
+	{
+		// Days Gone's large UE4.11 image produces many UWorld pointer matches and makes
+		// the legacy exhaustive search repeat for minutes. The generated SDK already
+		// falls back to UEngine::GameViewport when GWorld remains zero.
+		Generator::ReportProgress("GWorld discovery skipped (Days Gone UE4.11 safe fallback)");
+		return;
+	}
+
 	UEClass UWorld = ObjectArray::FindClassFast("World");
 
 	for (UEObject Obj : ObjectArray())

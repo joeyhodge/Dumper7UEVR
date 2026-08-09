@@ -8,8 +8,23 @@
 #include "Unreal/ObjectArray.h"
 #include "OffsetFinder/Offsets.h"
 
+namespace
+{
+	bool UseDaysGoneUE411Settings()
+	{
+		return Settings::Generator::GameName == "DaysGone";
+	}
+}
+
 void Settings::InitWeakObjectPtrSettings()
 {
+	if (UseDaysGoneUE411Settings())
+	{
+		// UE4.11 TPersistentObjectPtr contains TagAtLastTest.
+		Settings::Internal::bIsWeakObjectPtrWithoutTag = false;
+		return;
+	}
+
 	if (Off::ExternalGeneratorSettings.HasWeakObjectPtrWithoutTag)
 	{
 		Settings::Internal::bIsWeakObjectPtrWithoutTag =
@@ -45,6 +60,12 @@ void Settings::InitWeakObjectPtrSettings()
 
 void Settings::InitLargeWorldCoordinateSettings()
 {
+	if (UseDaysGoneUE411Settings())
+	{
+		Settings::Internal::bUseLargeWorldCoordinates = false;
+		return;
+	}
+
 	if (Off::ExternalGeneratorSettings.HasLargeWorldCoordinates)
 	{
 		Settings::Internal::bUseLargeWorldCoordinates =
@@ -76,6 +97,12 @@ void Settings::InitLargeWorldCoordinateSettings()
 
 void Settings::InitObjectPtrPropertySettings()
 {
+	if (UseDaysGoneUE411Settings())
+	{
+		Settings::Internal::bIsObjPtrInsteadOfFieldPathProperty = false;
+		return;
+	}
+
 	if (Off::ExternalGeneratorSettings.HasObjectPtrInsteadOfFieldPath)
 	{
 		Settings::Internal::bIsObjPtrInsteadOfFieldPathProperty =
@@ -100,6 +127,12 @@ void Settings::InitObjectPtrPropertySettings()
 
 void Settings::InitArrayDimSizeSettings()
 {
+	if (UseDaysGoneUE411Settings())
+	{
+		Settings::Internal::bUseUint8ArrayDim = false;
+		return;
+	}
+
 	if (Off::ExternalGeneratorSettings.HasUint8ArrayDim)
 	{
 		Settings::Internal::bUseUint8ArrayDim = Off::ExternalGeneratorSettings.Uint8ArrayDim;

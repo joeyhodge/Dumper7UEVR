@@ -3,12 +3,46 @@
 #include "Generators/Generator.h"
 #include "OffsetFinder/Offsets.h"
 #include "Platform.h"
+#include "Settings.h"
 
 namespace
 {
+	bool TryGetCurrentObjectCastFlagsUnsafe(UEObject Object, EClassCastFlags& OutCastFlags)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr)
+			return false;
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
+			return false;
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr)
+			return false;
+
+		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
+	}
+
 	bool TryGetCurrentObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
 	{
 		OutCastFlags = EClassCastFlags::None;
+		if (Settings::Generator::GameName == "DaysGone")
+		{
+#if defined(_MSC_VER)
+			__try
+			{
+				return TryGetCurrentObjectCastFlagsUnsafe(Object, OutCastFlags);
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				return false;
+			}
+#else
+			return TryGetCurrentObjectCastFlagsUnsafe(Object, OutCastFlags);
+#endif
+		}
 
 		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
 		if (Address == nullptr ||
@@ -34,6 +68,12 @@ namespace
 
 		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
 		return true;
+	}
+
+	bool HasCurrentObjectCastFlag(UEObject Object, EClassCastFlags RequiredFlag)
+	{
+		EClassCastFlags CastFlags{};
+		return TryGetCurrentObjectCastFlags(Object, CastFlags) && (CastFlags & RequiredFlag);
 	}
 
 	bool IsCurrentStructObject(UEStruct Struct)
@@ -157,7 +197,9 @@ void StructManager::InitAlignmentsAndNames()
 		if (ObjAsStruct == OnlineEngineInterfaceImplClass) [[unlikely]]
 			CppName += '2';
 
-		NewOrExistingInfo.Name = UniqueNameTable.FindOrAdd(CppName, !ObjAsStruct.IsA(EClassCastFlags::Function)).first;
+		NewOrExistingInfo.Name = UniqueNameTable.FindOrAdd(
+			CppName,
+			!HasCurrentObjectCastFlag(ObjAsStruct, EClassCastFlags::Function)).first;
 
 		// Interfaces inherit from UObject by default, but as a workaround to no virtual-inheritance we make them empty
 		if (ObjAsStruct.HasType(InterfaceClass))
@@ -186,7 +228,8 @@ void StructManager::InitAlignmentsAndNames()
 		const bool bHasSuperClass = static_cast<bool>(ObjAsStruct.GetSuper());
 
 		// if Class alignment is below pointer-alignment (0x8), use pointer-alignment instead, else use whichever, MinAlignment or HighestAlignment, is bigger
-		if (ObjAsStruct.IsA(EClassCastFlags::Class) && bHasSuperClass && HighestMemberAlignment < DefaultClassAlignment)
+		if (HasCurrentObjectCastFlag(ObjAsStruct, EClassCastFlags::Class) &&
+			bHasSuperClass && HighestMemberAlignment < DefaultClassAlignment)
 		{
 			NewOrExistingInfo.bUseExplicitAlignment = false;
 			NewOrExistingInfo.Alignment = DefaultClassAlignment;
@@ -214,7 +257,7 @@ void StructManager::InitAlignmentsAndNames()
 				std::to_string(AllStructs.size()));
 		}
 
-		if (ObjAsStruct.IsA(EClassCastFlags::Function) || ObjAsStruct.HasType(InterfaceClass))
+		if (HasCurrentObjectCastFlag(ObjAsStruct, EClassCastFlags::Function) || ObjAsStruct.HasType(InterfaceClass))
 			continue;
 
 		constexpr int MaxNumSuperClasses = 0x30;
@@ -312,7 +355,7 @@ void StructManager::InitSizesAndIsFinal()
 		/* No need to check any other structs, as finding the LastMemberEnd only involves this struct */
 		NewOrExistingInfo.LastMemberEnd = LastMemberEnd;
 
-		if (!Super || ObjAsStruct.IsA(EClassCastFlags::Function))
+		if (!Super || HasCurrentObjectCastFlag(ObjAsStruct, EClassCastFlags::Function))
 			continue;
 
 		/*

@@ -142,6 +142,9 @@ R"(
 		/* Whether the 'Value' component in the Pair<Name, Value> UEnum::Names is a uint8 value, rather than the default int64 */
 		inline bool bIsSmallEnumValue = false;
 
+		/* Whether UEnum::Names uses the tightly packed UE4.11-era TPair<FName, uint8> layout. */
+		inline bool bIsCompactEnumValue = false;
+
 		/* Whether UEnum has 'EUnderlyingType UnderlyingType' */
 		inline bool bHasUnderlayingTypeInUEnum = false;
 

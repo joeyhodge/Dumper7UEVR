@@ -84,12 +84,18 @@ void InitCorePredefinedMembers(PredefinedMemberLookupMapType& OutMembers)
 		);
 	}
 
+	const char* UEnumNamesType = "class TArray<class TPair<class FName, int64>>";
+	if (Settings::Internal::bIsEnumNameOnly)
+		UEnumNamesType = "class TArray<class FName>";
+	else if (Settings::Internal::bIsCompactEnumValue)
+		UEnumNamesType = "class TArray<class TPair<class FName, uint8>>";
+
 	PredefinedElements& UEnumPredefs = OutMembers[ObjectArray::FindClassFast("Enum").GetIndex()];
 	UEnumPredefs.Members =
 	{
 		PredefinedMember {
 			.Comment = "NOT AUTO-GENERATED PROPERTY",
-			.Type = "class TArray<class TPair<class FName, int64>>", .Name = "Names", .Offset = Off::UEnum::Names, .Size = sizeof(TArray<int>), .ArrayDim = 0x1, .Alignment = alignof(TArray<int>),
+			.Type = UEnumNamesType, .Name = "Names", .Offset = Off::UEnum::Names, .Size = sizeof(TArray<int>), .ArrayDim = 0x1, .Alignment = alignof(TArray<int>),
 			.bIsStatic = false, .bIsZeroSizeMember = false, .bIsBitField = false, .BitIndex = 0xFF
 		},
 	};
