@@ -830,11 +830,14 @@ template<typename UEType>
 UEType ObjectArray::FindObjectFast(const std::string& Name, EClassCastFlags RequiredType)
 {
 	auto ObjArray = ObjectArray();
-	const bool bGuardSparseUE411Snapshot = Settings::Generator::GameName == "DaysGone";
+	// UEVR snapshots can retain stale entries while a dump is running. Class
+	// lookups are infrequent, so guard them for every externally supplied array
+	// instead of allowing one stale class pointer to abort SDK generation.
+	const bool bGuardExternalSnapshot = bUsesExternalObjectAccess;
 
 	for (UEObject Object : ObjArray)
 	{
-		const bool bMatches = bGuardSparseUE411Snapshot
+		const bool bMatches = bGuardExternalSnapshot
 			? TryObjectMatchesFast(Object, Name, RequiredType)
 			: (Object.IsA(RequiredType) && Object.GetName() == Name);
 
