@@ -13,9 +13,11 @@
 
 namespace
 {
-	bool TryGetCurrentGeneratorObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
+	bool TryGetCurrentGeneratorObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags, int32* OutIndex = nullptr)
 	{
 		OutCastFlags = EClassCastFlags::None;
+		if (OutIndex != nullptr)
+			*OutIndex = -1;
 
 		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
 		if (Address == nullptr ||
@@ -40,7 +42,19 @@ namespace
 		}
 
 		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		if (OutIndex != nullptr)
+			*OutIndex = Index;
+
 		return true;
+	}
+
+	bool IsCurrentGeneratorObjectAtIndex(UEObject Object, int32 ExpectedIndex, EClassCastFlags RequiredFlags)
+	{
+		EClassCastFlags CastFlags{};
+		int32 CurrentIndex = -1;
+		return TryGetCurrentGeneratorObjectCastFlags(Object, CastFlags, &CurrentIndex) &&
+			CurrentIndex == ExpectedIndex &&
+			(static_cast<uint64>(CastFlags) & static_cast<uint64>(RequiredFlags)) != 0;
 	}
 }
 
@@ -1874,9 +1888,18 @@ void CppGenerator::Generate()
 				if (!StructManager::GetStructInfos().contains(Index))
 					return;
 
+				const UEObject StructObject = ObjectArray::GetByIndex(Index);
+				if (!IsCurrentGeneratorObjectAtIndex(StructObject, Index, EClassCastFlags::Struct))
+				{
+					Generator::ReportProgress(
+						"C++ SDK: skipping stale struct package=" + Package.GetName() +
+						" index=" + std::to_string(Index));
+					return;
+				}
+
 				try
 				{
-					GenerateStruct(ObjectArray::GetByIndex<UEStruct>(Index), StructsFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
+					GenerateStruct(StructObject.Cast<UEStruct>(), StructsFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
 				}
 				catch (const std::exception& Exception)
 				{
@@ -1900,9 +1923,18 @@ void CppGenerator::Generate()
 				if (!StructManager::GetStructInfos().contains(Index))
 					return;
 
+				const UEObject ClassObject = ObjectArray::GetByIndex(Index);
+				if (!IsCurrentGeneratorObjectAtIndex(ClassObject, Index, EClassCastFlags::Class))
+				{
+					Generator::ReportProgress(
+						"C++ SDK: skipping stale class package=" + Package.GetName() +
+						" index=" + std::to_string(Index));
+					return;
+				}
+
 				try
 				{
-					GenerateStruct(ObjectArray::GetByIndex<UEStruct>(Index), ClassesFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
+					GenerateStruct(ClassObject.Cast<UEStruct>(), ClassesFile, FunctionsFile, ParametersFile, FileForAssertions, PackageIndex);
 				}
 				catch (const std::exception& Exception)
 				{
