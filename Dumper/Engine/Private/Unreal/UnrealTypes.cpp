@@ -66,9 +66,10 @@ FName::FName(const void* Ptr)
 {
 }
 
-void FName::SetExternalToStringCallback(ExternalToStringCallback Callback)
+void FName::SetExternalToStringCallback(ExternalToStringCallback Callback, bool bPreferExternal)
 {
 	ExternalToString = Callback;
+	bPreferExternalToString = Callback != nullptr && bPreferExternal;
 }
 
 bool FName::IsInitialized()
@@ -79,6 +80,21 @@ bool FName::IsInitialized()
 void FName::Init_Windows(bool bForceGNames)
 {
 #ifdef PLATFORM_WINDOWS
+	// UEVR already resolves the engine's FName implementation before plugins are
+	// initialized. Prefer that validated callback instead of allowing an
+	// optimized UE5.8 ToString body to match Dumper-7's older AppendString scans.
+	if (!bForceGNames && ExternalToString != nullptr && bPreferExternalToString)
+	{
+		ToStr = ExternalToString;
+		AppendString = nullptr;
+		GetNameEntryFromName = nullptr;
+		Off::InSDK::Name::bIsUsingAppendStringOverToString = false;
+		Off::InSDK::Name::bIsAppendStringInlinedAndUsed = false;
+		Off::InSDK::Name::AppendNameToString = 0x0;
+		Off::InSDK::Name::GetNameEntryFromName = 0x0;
+		std::cerr << "Using validated UEVR FName conversion callback\n\n";
+		return;
+	}
 
 #if defined(_WIN64)
 	constexpr std::array<const char*, 6> PossibleSigs = 

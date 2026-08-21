@@ -90,6 +90,7 @@ private:
 
 	inline static std::wstring(*ToStr)(const void* Name) = nullptr;
 	inline static ExternalToStringCallback ExternalToString = nullptr;
+	inline static bool bPreferExternalToString = false;
 
 private:
 	const uint8* Address;
@@ -102,7 +103,7 @@ public:
 public:
 	static void Init_Windows(bool bForceGNames = false);
 	static void InitFallback();
-	static void SetExternalToStringCallback(ExternalToStringCallback Callback);
+	static void SetExternalToStringCallback(ExternalToStringCallback Callback, bool bPreferExternal = false);
 	static bool IsInitialized();
 
 	static void Init(int32 OverrideOffset, EOffsetOverrideType OverrideType = EOffsetOverrideType::AppendString, bool bIsNamePool = false, const char* const ModuleName = Settings::General::DefaultModuleName);

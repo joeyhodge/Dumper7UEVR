@@ -251,6 +251,7 @@ API::FUObjectArray* g_uevr_object_array{nullptr};
 void* g_uevr_raw_object_array{nullptr};
 std::vector<void*> g_uevr_object_snapshot{};
 uint32_t g_uevr_item_stride{0};
+std::atomic_bool g_uevr_fname_callback_validated{false};
 thread_local DWORD g_last_seh_code{0};
 thread_local uintptr_t g_last_seh_address{0};
 thread_local uintptr_t g_last_seh_rip{0};
@@ -506,6 +507,29 @@ bool capture_uevr_object_snapshot()
 	const uint32_t item_stride = static_cast<uint32_t>(API::FUObjectArray::get_item_distance());
 	if (object_count <= 0 || object_count > 4'000'000 || item_stride < sizeof(void*))
 		return false;
+
+	g_uevr_fname_callback_validated.store(false, std::memory_order_relaxed);
+	auto* core_object_class = API::get()->find_uobject<API::UObject>(L"Class /Script/CoreUObject.Object");
+	if (core_object_class != nullptr)
+	{
+		auto* object_name = core_object_class->get_fname();
+		const std::wstring resolved_name = uevr_fname_to_string(object_name);
+		if (resolved_name == L"Object")
+		{
+			g_uevr_fname_callback_validated.store(true, std::memory_order_release);
+			API::get()->log_info("dump.dll: validated UEVR FName conversion callback");
+		}
+		else
+		{
+			API::get()->log_warn(
+				"dump.dll: UEVR FName conversion validation returned an unexpected name; retaining Dumper-7 discovery");
+		}
+	}
+	else
+	{
+		API::get()->log_warn(
+			"dump.dll: UEVR FName conversion validation object was unavailable; retaining Dumper-7 discovery");
+	}
 
 	std::vector<void*> snapshot(static_cast<size_t>(object_count));
 	for (int32_t index = 0; index < object_count; ++index)
@@ -779,23 +803,46 @@ bool capture_uevr_object_snapshot()
 	}
 
 	Off::ExternalUStructLayout = {};
+	auto* field_class = API::get()->find_uobject<API::UStruct>(L"Class /Script/CoreUObject.Field");
+	auto* next_property = field_class != nullptr ? field_class->find_property(L"Next") : nullptr;
+	if (next_property != nullptr)
+	{
+		const int32 NextOffset = next_property->get_offset();
+		if (NextOffset >= 0x20 && NextOffset <= 0x60 &&
+			(NextOffset % static_cast<int32>(alignof(void*))) == 0)
+		{
+			Off::ExternalUStructLayout.UFieldNextOffset = NextOffset;
+			API::get()->log_info("dump.dll: captured reflected UField.Next offset=0x%X", NextOffset);
+		}
+		else
+		{
+			API::get()->log_warn("dump.dll: rejected implausible reflected UField.Next offset=0x%X", NextOffset);
+		}
+	}
+
 	const auto* runtime_version = API::get()->param()->version;
 	const bool has_extended_ustruct_api = runtime_version != nullptr &&
 		(runtime_version->major > 2 || (runtime_version->major == 2 && runtime_version->minor >= 39));
 	if (has_extended_ustruct_api && API::get()->sdk()->ustruct != nullptr &&
-		API::get()->sdk()->ustruct->get_children != nullptr && API::get()->sdk()->ufield != nullptr)
+		API::get()->sdk()->ustruct->get_children != nullptr)
 	{
 		auto* kismet_system_library = API::get()->find_uobject<API::UStruct>(L"Class /Script/Engine.KismetSystemLibrary");
 		auto* actor_class = API::get()->find_uobject<API::UStruct>(L"Class /Script/Engine.Actor");
-		auto* children = kismet_system_library != nullptr ? kismet_system_library->get_children() : nullptr;
-		auto* next_child = children != nullptr ? children->get_next() : nullptr;
-		auto* actor_super = actor_class != nullptr ? actor_class->get_super_struct() : nullptr;
+		auto* children = try_get_uevr_children(kismet_system_library);
+		auto* next_child = API::get()->sdk()->ufield != nullptr &&
+			API::get()->sdk()->ufield->get_next != nullptr
+			? try_get_uevr_next(children)
+			: nullptr;
+		auto* actor_super = try_get_uevr_super(actor_class);
 		auto* vector_children = vector_struct != nullptr ? vector_struct->get_child_properties() : nullptr;
 
 		Off::ExternalUStructLayout.ChildrenOffset =
 			FindPointerOffset(kismet_system_library, children, 0x20, 0x100);
-		Off::ExternalUStructLayout.UFieldNextOffset =
-			FindPointerOffset(children, next_child, 0x20, 0x80);
+		if (!Off::ExternalUStructLayout.HasUFieldNext())
+		{
+			Off::ExternalUStructLayout.UFieldNextOffset =
+				FindPointerOffset(children, next_child, 0x20, 0x80);
+		}
 		Off::ExternalUStructLayout.SuperStructOffset =
 			FindPointerOffset(actor_class, actor_super, 0x20, 0x100);
 		Off::ExternalUStructLayout.ChildPropertiesOffset =
@@ -1165,7 +1212,9 @@ DWORD MainThreadImpl(HMODULE module)
 
     try
     {
-		FName::SetExternalToStringCallback(uevr_fname_to_string);
+		FName::SetExternalToStringCallback(
+			uevr_fname_to_string,
+			g_uevr_fname_callback_validated.load(std::memory_order_acquire));
         Settings::Config::Load();
 
 		if (!Generator::PrepareOutputFolder())

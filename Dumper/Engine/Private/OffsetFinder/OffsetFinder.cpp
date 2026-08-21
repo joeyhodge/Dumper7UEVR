@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <vector>
 #include <random>
 #include <cstring>
@@ -484,14 +486,57 @@ void OffsetFinder::PostInitFNameSettings()
 /* UField */
 int32_t OffsetFinder::FindUFieldNextOffset()
 {
-	const void* KismetSystemLibraryChild = ObjectArray::FindObjectFast<UEStruct>("KismetSystemLibrary").GetChild().GetAddress();
-	const void* KismetStringLibraryChild = ObjectArray::FindObjectFast<UEStruct>("KismetStringLibrary").GetChild().GetAddress();
+	const int32 UObjectEnd = (std::max)({
+		Off::UObject::Flags + static_cast<int32>(sizeof(int32)),
+		Off::UObject::Index + static_cast<int32>(sizeof(int32)),
+		Off::UObject::Class + static_cast<int32>(sizeof(void*)),
+		Off::UObject::Name + Off::InSDK::Name::FNameSize,
+		Off::UObject::Outer + static_cast<int32>(sizeof(void*))
+	});
+	const int32 FirstUFieldMember = Align(UObjectEnd, static_cast<int32>(alignof(void*)));
 
-#undef max
-	const auto HighestUObjectOffset = std::max({ Off::UObject::Index, Off::UObject::Name, Off::UObject::Flags, Off::UObject::Outer, Off::UObject::Class });
-#define max(a,b)            (((a) > (b)) ? (a) : (b))
+	static constexpr std::array CandidateStructNames{
+		"KismetSystemLibrary",
+		"KismetStringLibrary",
+		"KismetMathLibrary",
+		"Actor",
+		"PlayerController",
+		"Object",
+		"Field",
+		"Struct"
+	};
 
-	return GetValidPointerOffset(KismetSystemLibraryChild, KismetStringLibraryChild, Align(HighestUObjectOffset + 0x4, static_cast<int>(sizeof(void*))), 0x60);
+	std::vector<const void*> ChildFields;
+	ChildFields.reserve(CandidateStructNames.size());
+	for (const char* Name : CandidateStructNames)
+	{
+		const UEStruct Struct = ObjectArray::FindObjectFast<UEStruct>(Name);
+		if (!Struct)
+			continue;
+
+		const void* Child = Struct.GetChild().GetAddress();
+		if (Child != nullptr && !Platform::IsBadReadPtr(Child))
+			ChildFields.push_back(Child);
+	}
+
+	for (size_t First = 0; First < ChildFields.size(); ++First)
+	{
+		for (size_t Second = First + 1; Second < ChildFields.size(); ++Second)
+		{
+			const int32 FoundOffset = GetValidPointerOffset(
+				ChildFields[First], ChildFields[Second], FirstUFieldMember, 0x60);
+			if (FoundOffset != OffsetNotFound)
+				return FoundOffset;
+		}
+	}
+
+	// UField::Next is UField's first data member in UE4 and UE5, including its
+	// reflected TObjectPtr form in UE5.7+. Use that layout only when live
+	// linked-list samples were unavailable, rather than dereferencing null data.
+	std::cerr << std::format(
+		"UField::Next live validation unavailable; using first-member offset 0x{:X}\n",
+		FirstUFieldMember);
+	return FirstUFieldMember;
 }
 
 /* FField */
@@ -1019,24 +1064,54 @@ int32_t OffsetFinder::FindFunctionFlagsOffset()
 
 int32_t OffsetFinder::FindFunctionNativeFuncOffset()
 {
-	std::vector<std::pair<void*, EFunctionFlags>> Infos;
-
-	uintptr_t WasInputKeyJustPressed = reinterpret_cast<uintptr_t>(ObjectArray::FindObjectFast("WasInputKeyJustPressed", EClassCastFlags::Function).GetAddress());
-	uintptr_t ToggleSpeaking = reinterpret_cast<uintptr_t>(ObjectArray::FindObjectFast("ToggleSpeaking", EClassCastFlags::Function).GetAddress());
-	uintptr_t SwitchLevel_Or_FOV = reinterpret_cast<uintptr_t>(ObjectArray::FindObjectFast("SwitchLevel", EClassCastFlags::Function).GetAddress());
+	const uintptr_t WasInputKeyJustPressed = reinterpret_cast<uintptr_t>(
+		ObjectArray::FindObjectFast("WasInputKeyJustPressed", EClassCastFlags::Function).GetAddress());
+	const uintptr_t ToggleSpeaking = reinterpret_cast<uintptr_t>(
+		ObjectArray::FindObjectFast("ToggleSpeaking", EClassCastFlags::Function).GetAddress());
+	uintptr_t SwitchLevel_Or_FOV = reinterpret_cast<uintptr_t>(
+		ObjectArray::FindObjectFast("SwitchLevel", EClassCastFlags::Function).GetAddress());
 
 	// Some games don't have APlayerController::SwitchLevel(), so we replace it with APlayerController::FOV() which has the same FunctionFlags
-	if (SwitchLevel_Or_FOV == NULL)
+	if (SwitchLevel_Or_FOV == 0)
 		SwitchLevel_Or_FOV = reinterpret_cast<uintptr_t>(ObjectArray::FindObjectFast("FOV", EClassCastFlags::Function).GetAddress());
+
+	const std::array FunctionObjects{ WasInputKeyJustPressed, ToggleSpeaking, SwitchLevel_Or_FOV };
+	if (std::ranges::any_of(FunctionObjects, [](const uintptr_t Address)
+		{
+			return Address == 0 || Platform::IsBadReadPtr(reinterpret_cast<const void*>(Address));
+		}))
+	{
+		std::cerr << "UFunction native-pointer probes were unavailable; leaving the offset unresolved\n";
+		return OffsetNotFound;
+	}
 
 	for (int i = 0x30; i < 0x140; i += sizeof(void*))
 	{
-		if (Platform::IsAddressInProcessRange(*reinterpret_cast<uintptr_t*>(WasInputKeyJustPressed + i)) &&
-			Platform::IsAddressInProcessRange(*reinterpret_cast<uintptr_t*>(ToggleSpeaking + i)) && Platform::IsAddressInProcessRange(*reinterpret_cast<uintptr_t*>(SwitchLevel_Or_FOV + i)))
+		bool bAllExecutablePointers = true;
+		for (const uintptr_t FunctionObject : FunctionObjects)
+		{
+			const auto* Slot = reinterpret_cast<const void*>(FunctionObject + i);
+			if (Platform::IsBadReadPtr(Slot) ||
+				Platform::IsBadReadPtr(reinterpret_cast<const uint8_t*>(Slot) + sizeof(uintptr_t) - 1))
+			{
+				bAllExecutablePointers = false;
+				break;
+			}
+
+			uintptr_t Candidate = 0;
+			std::memcpy(&Candidate, Slot, sizeof(Candidate));
+			if (!Platform::IsAddressInProcessRange(Candidate))
+			{
+				bAllExecutablePointers = false;
+				break;
+			}
+		}
+
+		if (bAllExecutablePointers)
 			return i;
 	}
 
-	return 0x0;
+	return OffsetNotFound;
 }
 
 /* UClass */
@@ -1062,20 +1137,63 @@ int32_t OffsetFinder::FindDefaultObjectOffset()
 
 int32_t OffsetFinder::FindImplementedInterfacesOffset()
 {
-	UEClass Interface_AssetUserDataClass = ObjectArray::FindClassFast("Interface_AssetUserData");
+	const UEClass Interface_AssetUserDataClass = ObjectArray::FindClassFast("Interface_AssetUserData");
+	const UEClass ActorComponentClass = ObjectArray::FindClassFast("ActorComponent");
+	const auto* ActorComponentClassPtr = static_cast<const uint8_t*>(ActorComponentClass.GetAddress());
 
-	const uint8_t* ActorComponentClassPtr = reinterpret_cast<const uint8_t*>(ObjectArray::FindClassFast("ActorComponent").GetAddress());
-
-	for (int i = Off::UClass::ClassDefaultObject; i <= (0x350 - 0x10); i += sizeof(void*))
+	if (!Interface_AssetUserDataClass || !ActorComponentClass || ActorComponentClassPtr == nullptr ||
+		Off::UClass::ClassDefaultObject < 0)
 	{
-		const auto& ActorArray = *reinterpret_cast<const TArray<FImplementedInterface>*>(ActorComponentClassPtr + i);
+		std::cerr << "UClass::Interfaces live validation unavailable; continuing without interface metadata\n";
+		return OffsetNotFound;
+	}
 
-		if (ActorArray.IsValid() && !Platform::IsBadReadPtr(ActorArray.GetDataPtr()))
+	const int32_t ScanStart = Align(
+		Off::UClass::ClassDefaultObject + static_cast<int32_t>(sizeof(void*)),
+		static_cast<int32_t>(alignof(void*)));
+	constexpr int32_t MaxUClassScanSize = 0x350;
+	constexpr int32_t MaxImplementedInterfaces = 0x100;
+
+	for (int32_t Offset = ScanStart;
+		Offset <= (MaxUClassScanSize - static_cast<int32_t>(sizeof(TArray<FImplementedInterface>)));
+		Offset += static_cast<int32_t>(sizeof(void*)))
+	{
+		const auto* HeaderAddress = ActorComponentClassPtr + Offset;
+		if (Platform::IsBadReadPtr(HeaderAddress) ||
+			Platform::IsBadReadPtr(HeaderAddress + sizeof(TArray<FImplementedInterface>) - 1))
 		{
-			if (ActorArray[0].InterfaceClass == Interface_AssetUserDataClass)
-				return i;
+			continue;
+		}
+
+		// Copy the header before inspecting it so an arbitrary UClass offset is
+		// never treated as a live TArray reference.
+		TArray<FImplementedInterface> CandidateArray{};
+		std::memcpy(&CandidateArray, HeaderAddress, sizeof(CandidateArray));
+
+		if (!CandidateArray.IsValid() || CandidateArray.Num() > MaxImplementedInterfaces ||
+			CandidateArray.Max() > MaxImplementedInterfaces)
+		{
+			continue;
+		}
+
+		const auto* Data = CandidateArray.GetDataPtr();
+		const size_t DataSize = static_cast<size_t>(CandidateArray.Num()) * sizeof(FImplementedInterface);
+		if (Data == nullptr || DataSize == 0 || Platform::IsBadReadPtr(Data) ||
+			Platform::IsBadReadPtr(reinterpret_cast<const uint8_t*>(Data) + DataSize - 1))
+		{
+			continue;
+		}
+
+		for (int32_t Index = 0; Index < CandidateArray.Num(); ++Index)
+		{
+			FImplementedInterface Entry{};
+			std::memcpy(&Entry, Data + Index, sizeof(Entry));
+			if (Entry.InterfaceClass.GetAddress() == Interface_AssetUserDataClass.GetAddress())
+				return Offset;
 		}
 	}
+
+	std::cerr << "UClass::Interfaces offset was not validated; continuing without interface metadata\n";
 
 	return OffsetNotFound;
 }

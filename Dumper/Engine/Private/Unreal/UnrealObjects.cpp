@@ -1,3 +1,4 @@
+#include <cstring>
 #include <format>
 #include <type_traits>
 
@@ -510,6 +511,13 @@ void UEObject::ProcessEvent(UEFunction Func, void* Params)
 
 UEField UEField::GetNext() const
 {
+	if (!Object || Off::UField::Next < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UField::Next) ||
+		Platform::IsBadReadPtr(Object + Off::UField::Next + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return UEField(*reinterpret_cast<void**>(Object + Off::UField::Next));
 }
 
@@ -708,7 +716,8 @@ std::pair<uint8_t, bool> UEEnum::GetSizeSignedPair() const
 
 UEStruct UEStruct::GetSuper() const
 {
-	if (!Object || Platform::IsBadReadPtr(Object + Off::UStruct::SuperStruct) ||
+	if (!Object || Off::UStruct::SuperStruct < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::SuperStruct) ||
 		Platform::IsBadReadPtr(Object + Off::UStruct::SuperStruct + sizeof(void*) - 1))
 	{
 		return nullptr;
@@ -719,11 +728,25 @@ UEStruct UEStruct::GetSuper() const
 
 UEField UEStruct::GetChild() const
 {
+	if (!Object || Off::UStruct::Children < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::Children) ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::Children + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return UEField(*reinterpret_cast<void**>(Object + Off::UStruct::Children));
 }
 
 UEFField UEStruct::GetChildProperties() const
 {
+	if (!Object || Off::UStruct::ChildProperties < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::ChildProperties) ||
+		Platform::IsBadReadPtr(Object + Off::UStruct::ChildProperties + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return UEFField(*reinterpret_cast<void**>(Object + Off::UStruct::ChildProperties));
 }
 
@@ -854,6 +877,13 @@ bool UEStruct::HasMembers() const
 
 EClassCastFlags UEClass::GetCastFlags() const
 {
+	if (!Object || Off::UClass::CastFlags < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UClass::CastFlags) ||
+		Platform::IsBadReadPtr(Object + Off::UClass::CastFlags + sizeof(EClassCastFlags) - 1))
+	{
+		return EClassCastFlags::None;
+	}
+
 	return *reinterpret_cast<EClassCastFlags*>(Object + Off::UClass::CastFlags);
 }
 
@@ -869,12 +899,46 @@ bool UEClass::IsType(EClassCastFlags TypeFlag) const
 
 UEObject UEClass::GetDefaultObject() const
 {
+	if (!Object || Off::UClass::ClassDefaultObject < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UClass::ClassDefaultObject) ||
+		Platform::IsBadReadPtr(Object + Off::UClass::ClassDefaultObject + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return UEObject(*reinterpret_cast<void**>(Object + Off::UClass::ClassDefaultObject));
 }
 
 TArray<FImplementedInterface> UEClass::GetImplementedInterfaces() const
 {
-	return *reinterpret_cast<TArray<FImplementedInterface>*>(Object + Off::UClass::ImplementedInterfaces);
+	TArray<FImplementedInterface> Result{};
+	if (!Object || Off::UClass::ImplementedInterfaces < 0)
+		return Result;
+
+	const auto* HeaderAddress = Object + Off::UClass::ImplementedInterfaces;
+	if (Platform::IsBadReadPtr(HeaderAddress) ||
+		Platform::IsBadReadPtr(HeaderAddress + sizeof(Result) - 1))
+	{
+		return Result;
+	}
+
+	std::memcpy(&Result, HeaderAddress, sizeof(Result));
+	constexpr int32 MaxImplementedInterfaces = 0x100;
+	if (!Result.IsValid() || Result.Num() > MaxImplementedInterfaces ||
+		Result.Max() > MaxImplementedInterfaces)
+	{
+		return {};
+	}
+
+	const auto* Data = Result.GetDataPtr();
+	const size_t DataSize = static_cast<size_t>(Result.Num()) * sizeof(FImplementedInterface);
+	if (Data == nullptr || DataSize == 0 || Platform::IsBadReadPtr(Data) ||
+		Platform::IsBadReadPtr(reinterpret_cast<const uint8*>(Data) + DataSize - 1))
+	{
+		return {};
+	}
+
+	return Result;
 }
 
 UEFunction UEClass::GetFunction(const std::string& ClassName, const std::string& FuncName) const
@@ -899,6 +963,13 @@ UEFunction UEClass::GetFunction(const std::string& ClassName, const std::string&
 
 EFunctionFlags UEFunction::GetFunctionFlags() const
 {
+	if (!Object || Off::UFunction::FunctionFlags < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UFunction::FunctionFlags) ||
+		Platform::IsBadReadPtr(Object + Off::UFunction::FunctionFlags + sizeof(EFunctionFlags) - 1))
+	{
+		return EFunctionFlags::None;
+	}
+
 	return *reinterpret_cast<EFunctionFlags*>(Object + Off::UFunction::FunctionFlags);
 }
 
@@ -909,6 +980,13 @@ bool UEFunction::HasFlags(EFunctionFlags FuncFlags) const
 
 void* UEFunction::GetExecFunction() const
 {
+	if (!Object || Off::UFunction::ExecFunction < 0 ||
+		Platform::IsBadReadPtr(Object + Off::UFunction::ExecFunction) ||
+		Platform::IsBadReadPtr(Object + Off::UFunction::ExecFunction + sizeof(void*) - 1))
+	{
+		return nullptr;
+	}
+
 	return *reinterpret_cast<void**>(Object + Off::UFunction::ExecFunction);
 }
 
