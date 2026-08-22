@@ -763,7 +763,7 @@ void PropertySizes::InitTMulticastInlineDelegateSize()
 				{
 					if (Prop.IsA(EClassCastFlags::MulticastInlineDelegateProperty))
 					{
-						PropertySizes::DelegateProperty = Prop.GetSize();
+						PropertySizes::MulticastInlineDelegateProperty = Prop.GetSize();
 						return;
 					}
 				}

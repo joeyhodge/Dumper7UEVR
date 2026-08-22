@@ -914,8 +914,27 @@ bool capture_uevr_object_snapshot()
 		set_field_path_function != nullptr ? set_field_path_function->find_property(L"Value") : nullptr);
 
 	auto* primitive_component_class = API::get()->find_uobject<API::UStruct>(L"Class /Script/Engine.PrimitiveComponent");
-	Off::ExternalPropertyValueSizes.MulticastInlineDelegateProperty = ReadPropertyElementSize(
+	const int32 ReportedMulticastInlineDelegateSize = ReadPropertyElementSize(
 		primitive_component_class != nullptr ? primitive_component_class->find_property(L"OnComponentHit") : nullptr);
+	const bool HasPlausibleMulticastInlineDelegateSize =
+		ReportedMulticastInlineDelegateSize >= static_cast<int32>(sizeof(void*) * 2) &&
+		ReportedMulticastInlineDelegateSize <= 0x100 &&
+		(ReportedMulticastInlineDelegateSize % static_cast<int32>(alignof(void*))) == 0;
+
+	// FMulticastScriptDelegate stores a TArray on supported 64-bit UE builds. If
+	// reflection returns a mismatched property, retain its ABI size rather than
+	// scanning a live UObject snapshot for another delegate property.
+	Off::ExternalPropertyValueSizes.MulticastInlineDelegateProperty =
+		HasPlausibleMulticastInlineDelegateSize
+			? ReportedMulticastInlineDelegateSize
+			: static_cast<int32>(sizeof(void*) * 2);
+	if (!HasPlausibleMulticastInlineDelegateSize)
+	{
+		API::get()->log_warn(
+			"dump.dll: rejected implausible multicast inline delegate size 0x%X; using ABI-safe size 0x%X",
+			ReportedMulticastInlineDelegateSize,
+			Off::ExternalPropertyValueSizes.MulticastInlineDelegateProperty);
+	}
 
 	API::get()->log_info(
 		"dump.dll: captured UEVR property value sizes delegate=0x%X field_path=0x%X multicast_inline=0x%X",
