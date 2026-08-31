@@ -71,6 +71,11 @@ public:
 		return (bUsesExternalObjectAccess && ExternalObjectCount != nullptr && ExternalObjectLookup != nullptr) || (GObjects != nullptr && ByIndex != nullptr);
 	}
 
+	static inline bool UsesExternalObjectAccess()
+	{
+		return bUsesExternalObjectAccess;
+	}
+
 	static std::string GetInitializationSummary();
 
 	template<typename UEType = UEObject>

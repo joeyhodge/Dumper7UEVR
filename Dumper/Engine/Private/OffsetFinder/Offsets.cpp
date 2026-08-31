@@ -89,6 +89,15 @@ void Off::InSDK::ProcessEvent::InitPE(const int32 Index, const char* const Modul
 /* UWorld */
 void Off::InSDK::World::InitGWorld()
 {
+	if (ObjectArray::UsesExternalObjectAccess())
+	{
+		// The exhaustive pointer scan is only needed by standalone Dumper-7. UEVR
+		// supplies stable object traversal, and generated SDKs already fall back to
+		// UEngine::GameViewport when the decorative GWorld offset is unavailable.
+		Generator::ReportProgress("GWorld discovery skipped (UEVR external object snapshot safe fallback)");
+		return;
+	}
+
 	if (Settings::Generator::GameName == "DaysGone")
 	{
 		// Days Gone's large UE4.11 image produces many UWorld pointer matches and makes
