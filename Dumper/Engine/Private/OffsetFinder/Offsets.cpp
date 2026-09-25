@@ -339,8 +339,12 @@ void Off::Init()
 	Off::UObject::Outer = OffsetFinder::FindUObjectOuterOffset();
 	std::cerr << std::format("Off::UObject::Outer: 0x{:X}\n", Off::UObject::Outer);
 
-	ReportOffsetStage("UObject name");
-	Off::UObject::Name = OffsetFinder::FindUObjectNameOffset();
+	ReportOffsetStage(Off::ExternalEngineLayout.HasUObjectName()
+		? "UObject name (UEVR metadata)"
+		: "UObject name");
+	Off::UObject::Name = Off::ExternalEngineLayout.HasUObjectName()
+		? Off::ExternalEngineLayout.UObjectNameOffset
+		: OffsetFinder::FindUObjectNameOffset();
 	OverwriteIfInvalidOffset(Off::UObject::Name, (Off::UObject::Class + sizeof(void*))); // Default to right after Class
 	std::cerr << std::format("Off::UObject::Name: 0x{:X}\n\n", Off::UObject::Name);
 

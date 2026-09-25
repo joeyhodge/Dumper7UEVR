@@ -1060,6 +1060,14 @@ bool capture_uevr_object_snapshot()
 	auto* object_class = API::get()->find_uobject<API::UStruct>(L"Class /Script/CoreUObject.Object");
 	auto* struct_class = API::get()->find_uobject<API::UStruct>(L"Class /Script/CoreUObject.Struct");
 	auto* url_struct = API::get()->find_uobject<API::UStruct>(L"ScriptStruct /Script/Engine.URL");
+	auto* object_name = object_class != nullptr ? object_class->get_fname() : nullptr;
+	const int32 UObjectNameOffset = FindContainedOffset(object_class, object_name, 0x40);
+	if (UObjectNameOffset >= static_cast<int32>(sizeof(void*)) &&
+		(UObjectNameOffset % static_cast<int32>(alignof(int32))) == 0)
+	{
+		Off::ExternalEngineLayout.UObjectNameOffset = UObjectNameOffset;
+	}
+
 	auto* owning_world_property = level_class != nullptr
 		? level_class->find_property(L"OwningWorld")
 		: nullptr;
@@ -1165,11 +1173,13 @@ bool capture_uevr_object_snapshot()
 	Off::ExternalEngineLayout.ObjectClassIndex = FindSnapshotIndex(object_class);
 	Off::ExternalEngineLayout.StructClassIndex = FindSnapshotIndex(struct_class);
 
-	if (Off::ExternalEngineLayout.HasLevelActors() || Off::ExternalEngineLayout.HasDataTableRowMap() ||
+	if (Off::ExternalEngineLayout.HasUObjectName() || Off::ExternalEngineLayout.HasLevelActors() ||
+		Off::ExternalEngineLayout.HasDataTableRowMap() ||
 		Off::ExternalEngineLayout.HasCoreClassIndices())
 	{
 		API::get()->log_info(
-			"dump.dll: captured UEVR engine layout level_actors=0x%X datatable_row_map=0x%X object_class=%d struct_class=%d",
+			"dump.dll: captured UEVR engine layout uobject_name=0x%X level_actors=0x%X datatable_row_map=0x%X object_class=%d struct_class=%d",
+			Off::ExternalEngineLayout.UObjectNameOffset,
 			Off::ExternalEngineLayout.LevelActorsOffset,
 			Off::ExternalEngineLayout.DataTableRowMapOffset,
 			Off::ExternalEngineLayout.ObjectClassIndex,

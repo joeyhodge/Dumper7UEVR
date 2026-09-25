@@ -105,10 +105,16 @@ struct FExternalUStructLayout
 
 struct FExternalEngineLayout
 {
+	int32 UObjectNameOffset = -1;
 	int32 LevelActorsOffset = -1;
 	int32 DataTableRowMapOffset = -1;
 	int32 ObjectClassIndex = -1;
 	int32 StructClassIndex = -1;
+
+	inline bool HasUObjectName() const
+	{
+		return UObjectNameOffset >= 0;
+	}
 
 	inline bool HasLevelActors() const
 	{

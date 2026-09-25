@@ -33,7 +33,7 @@ namespace
 
 	bool IsCurrentPackageObject(UEObject Object)
 	{
-		if (Settings::Generator::GameName == "DaysGone")
+		if (ObjectArray::UsesExternalObjectAccess() || Settings::Generator::GameName == "DaysGone")
 		{
 #if defined(_MSC_VER)
 			__try

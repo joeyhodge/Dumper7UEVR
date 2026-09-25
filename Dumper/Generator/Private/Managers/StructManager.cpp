@@ -28,7 +28,7 @@ namespace
 	bool TryGetCurrentObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
 	{
 		OutCastFlags = EClassCastFlags::None;
-		if (Settings::Generator::GameName == "DaysGone")
+		if (ObjectArray::UsesExternalObjectAccess() || Settings::Generator::GameName == "DaysGone")
 		{
 #if defined(_MSC_VER)
 			__try
@@ -76,20 +76,47 @@ namespace
 		return TryGetCurrentObjectCastFlags(Object, CastFlags) && (CastFlags & RequiredFlag);
 	}
 
+	bool HasReadableStructSizeUnsafe(UEStruct Struct)
+	{
+		const auto* Address = static_cast<const uint8*>(Struct.GetAddress());
+		if (Address == nullptr)
+			return false;
+
+		(void)*reinterpret_cast<const int32*>(Address + Off::UStruct::Size);
+		return true;
+	}
+
+	bool HasReadableStructSize(UEStruct Struct)
+	{
+		if (ObjectArray::UsesExternalObjectAccess())
+		{
+#if defined(_MSC_VER)
+			__try
+			{
+				return HasReadableStructSizeUnsafe(Struct);
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				return false;
+			}
+#else
+			return HasReadableStructSizeUnsafe(Struct);
+#endif
+		}
+
+		const auto* Address = static_cast<const uint8*>(Struct.GetAddress());
+		return Address != nullptr &&
+			!Platform::IsBadReadPtr(Address + Off::UStruct::Size) &&
+			!Platform::IsBadReadPtr(Address + Off::UStruct::Size + sizeof(int32) - 1);
+	}
+
 	bool IsCurrentStructObject(UEStruct Struct)
 	{
 		EClassCastFlags CastFlags{};
 		if (!TryGetCurrentObjectCastFlags(Struct, CastFlags) || !(CastFlags & EClassCastFlags::Struct))
 			return false;
 
-		const auto* Address = static_cast<const uint8*>(Struct.GetAddress());
-		if (Platform::IsBadReadPtr(Address + Off::UStruct::Size) ||
-			Platform::IsBadReadPtr(Address + Off::UStruct::Size + sizeof(int32) - 1))
-		{
-			return false;
-		}
-
-		return true;
+		return HasReadableStructSize(Struct);
 	}
 }
 

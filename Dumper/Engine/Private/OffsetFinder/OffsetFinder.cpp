@@ -3,11 +3,54 @@
 #include <vector>
 #include <random>
 #include <cstring>
+#include <limits>
 
 #include "OffsetFinder/OffsetFinder.h"
 #include "Unreal/ObjectArray.h"
 
 #include "Platform.h"
+
+namespace
+{
+	bool TryReadFNameInts(const UEObject Object, int32& First, int32& Second)
+	{
+		const auto* ObjectAddress = static_cast<const uint8*>(Object.GetAddress());
+		if (ObjectAddress == nullptr)
+			return false;
+
+		const uintptr_t ObjectValue = reinterpret_cast<uintptr_t>(ObjectAddress);
+		const size_t RequiredSize = static_cast<size_t>(Off::UObject::Name) + (sizeof(int32) * 2);
+		if (Off::UObject::Name < 0 || ObjectValue > (std::numeric_limits<uintptr_t>::max)() - RequiredSize)
+			return false;
+
+		const auto* NameAddress = reinterpret_cast<const uint8*>(ObjectValue + Off::UObject::Name);
+		// External UEVR snapshots can contain stale entries. SEH is both safer and much
+		// cheaper than issuing VirtualQuery twice for every object in a large snapshot.
+		if (!ObjectArray::UsesExternalObjectAccess() &&
+			(Platform::IsBadReadPtr(NameAddress) ||
+			 Platform::IsBadReadPtr(NameAddress + (sizeof(int32) * 2) - 1)))
+		{
+			return false;
+		}
+
+#if defined(_MSC_VER)
+		__try
+		{
+			First = *reinterpret_cast<const int32*>(NameAddress);
+			Second = *reinterpret_cast<const int32*>(NameAddress + sizeof(int32));
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+#else
+		First = *reinterpret_cast<const int32*>(NameAddress);
+		Second = *reinterpret_cast<const int32*>(NameAddress + sizeof(int32));
+		return true;
+#endif
+	}
+}
 
 /* UObject */
 int32_t OffsetFinder::FindUObjectFlagsOffset()
@@ -353,12 +396,30 @@ void OffsetFinder::FixupHardcodedOffsets()
 
 void OffsetFinder::InitFNameSettings()
 {
-	UEObject FirstObject = ObjectArray::GetByIndex(0);
+	int32 FNameFirstInt = 0; // ComparisonIndex
+	int32 FNameSecondInt = 0; // Number/DisplayIndex
+	bool bFoundReadableName = false;
 
-	const uint8* NameAddress = static_cast<const uint8*>(FirstObject.GetFName().GetAddress());
+	if (ObjectArray::UsesExternalObjectAccess())
+	{
+		for (UEObject Obj : ObjectArray())
+		{
+			if (TryReadFNameInts(Obj, FNameFirstInt, FNameSecondInt))
+			{
+				bFoundReadableName = true;
+				break;
+			}
+		}
+	}
+	else
+	{
+		bFoundReadableName = TryReadFNameInts(ObjectArray::GetByIndex(0), FNameFirstInt, FNameSecondInt);
+	}
 
-	const int32 FNameFirstInt /* ComparisonIndex */ = *reinterpret_cast<const int32*>(NameAddress);
-	const int32 FNameSecondInt /* [Number/DisplayIndex] */ = *reinterpret_cast<const int32*>(NameAddress + 0x4);
+	if (!bFoundReadableName)
+	{
+		std::cerr << "Unable to read a live FName while detecting its layout; using the default 8-byte layout\n";
+	}
 
 	/* Some games move 'Name' before 'Class'. Just substract the offset of 'Name' with the offset of the member that follows right after it, to get an estimate of sizeof(FName). */
 	const int32 FNameSize = !Settings::Internal::bIsObjectNameBeforeClass ? (Off::UObject::Outer - Off::UObject::Name) : (Off::UObject::Class - Off::UObject::Name);
@@ -367,13 +428,26 @@ void OffsetFinder::InitFNameSettings()
 	Off::FName::Number = 0x4; // defaults for check
 
 	 // FNames for which FName::Number == [1...4]
-	auto GetNumNamesWithNumberOneToFour = []() -> int32
+	auto GetNumNamesWithNumberOneToFour = [](int32& NumReadableNames) -> int32
 	{
 		int32 NamesWithNumberOneToFour = 0x0;
+		NumReadableNames = 0x0;
 
 		for (UEObject Obj : ObjectArray())
 		{
-			const uint32 Number = Obj.GetFName().GetNumber();
+			int32 ComparisonIndex = 0;
+			int32 Number = 0;
+			if (ObjectArray::UsesExternalObjectAccess())
+			{
+				if (!TryReadFNameInts(Obj, ComparisonIndex, Number))
+					continue;
+			}
+			else
+			{
+				Number = static_cast<int32>(Obj.GetFName().GetNumber());
+			}
+
+			NumReadableNames++;
 
 			if (Number > 0x0 && Number < 0x5)
 				NamesWithNumberOneToFour++;
@@ -393,7 +467,12 @@ void OffsetFinder::InitFNameSettings()
 	constexpr float MinPercentage = 0.03f;
 
 	/* Minimum required ammount of names for which FName::Number is in a [1...4] range */
-	const int32 FNameNumberThreashold = (ObjectArray::Num() * MinPercentage);
+	int32 NumReadableNames = ObjectArray::Num();
+	const bool bNeedsNumberHeuristic = FNameSize != 0x10 && !(FNameSize == 0x8 && FNameFirstInt == FNameSecondInt);
+	const int32 NamesWithNumberOneToFour = bNeedsNumberHeuristic
+		? GetNumNamesWithNumberOneToFour(NumReadableNames)
+		: 0;
+	const int32 FNameNumberThreashold = static_cast<int32>(NumReadableNames * MinPercentage);
 
 	Off::FName::CompIdx = 0x0;
 
@@ -413,7 +492,7 @@ void OffsetFinder::InitFNameSettings()
 
 		Off::InSDK::Name::FNameSize = 0xC;
 	}
-	else if (GetNumNamesWithNumberOneToFour() < FNameNumberThreashold) /* FNAME_OUTLINE_NUMBER */
+	else if (NamesWithNumberOneToFour < FNameNumberThreashold) /* FNAME_OUTLINE_NUMBER */
 	{
 		Settings::Internal::bUseOutlineNumberName = true;
 

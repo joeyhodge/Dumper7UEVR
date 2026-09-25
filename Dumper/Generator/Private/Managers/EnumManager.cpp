@@ -6,9 +6,43 @@
 
 namespace
 {
+	bool TryGetCurrentObjectCastFlagsUnsafe(UEObject Object, EClassCastFlags& OutCastFlags)
+	{
+		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
+		if (Address == nullptr)
+			return false;
+
+		const int32 Index = *reinterpret_cast<const int32*>(Address + Off::UObject::Index);
+		if (Index < 0 || Index >= ObjectArray::Num() || ObjectArray::GetByIndex(Index).GetAddress() != Object.GetAddress())
+			return false;
+
+		const auto* Class = *reinterpret_cast<uint8* const*>(Address + Off::UObject::Class);
+		if (Class == nullptr)
+			return false;
+
+		(void)*reinterpret_cast<const EObjectFlags*>(Address + Off::UObject::Flags);
+		OutCastFlags = *reinterpret_cast<const EClassCastFlags*>(Class + Off::UClass::CastFlags);
+		return true;
+	}
+
 	bool TryGetCurrentObjectCastFlags(UEObject Object, EClassCastFlags& OutCastFlags)
 	{
 		OutCastFlags = EClassCastFlags::None;
+		if (ObjectArray::UsesExternalObjectAccess())
+		{
+#if defined(_MSC_VER)
+			__try
+			{
+				return TryGetCurrentObjectCastFlagsUnsafe(Object, OutCastFlags);
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				return false;
+			}
+#else
+			return TryGetCurrentObjectCastFlagsUnsafe(Object, OutCastFlags);
+#endif
+		}
 
 		const auto* Address = static_cast<const uint8*>(Object.GetAddress());
 		if (Address == nullptr ||
